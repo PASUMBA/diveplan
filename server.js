@@ -17,6 +17,16 @@ const assetTypes = new Map([
   ["/mission.js", "text/javascript; charset=utf-8"],
   ["/scene.js", "text/javascript; charset=utf-8"]
 ]);
+// Keep the editor and its server-side sketch generator from the same release,
+// even when an updated ZIP is extracted while an older instance is running.
+const assets = new Map();
+const fingerprint = crypto.createHash("sha256").update(fs.readFileSync(__filename));
+for (const route of assetTypes.keys()) {
+  const bytes = fs.readFileSync(path.join(__dirname, route.slice(1)));
+  assets.set(route, bytes);
+  fingerprint.update(route).update(bytes);
+}
+const release = fingerprint.digest("hex");
 
 function findArduinoCli() {
   const executable = process.platform === "win32" ? "arduino-cli.exe" : "arduino-cli";
@@ -156,14 +166,13 @@ function createDiveServer({ cli = findArduinoCli(), listPorts = discoverPorts, r
     try {
       if (req.method === "GET" && (route === "/" || assetTypes.has(route))) {
         const asset = route === "/" ? "/index.html" : route;
-        const contents = await fs.promises.readFile(path.join(__dirname, asset.slice(1)));
-        return send(res, 200, contents, assetTypes.get(asset));
+        return send(res, 200, assets.get(asset), assetTypes.get(asset));
       }
       if (route.startsWith("/api/") && req.headers["sec-fetch-site"] === "cross-site") {
         return fail(403, "Open DivePlan to access its local tools.");
       }
       if (req.method === "GET" && route === "/api/identity") {
-        return send(res, 200, { app: "DivePlan" });
+        return send(res, 200, { app: "DivePlan", release });
       }
       if (req.method === "GET" && route === "/api/info") {
         let ports = [];
@@ -231,26 +240,35 @@ async function start() {
   const port = portIndex < 0 ? defaultPort : Number(args[portIndex + 1]);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Use a port between 0 and 65535.");
   const server = createDiveServer();
+  let activePort = port;
   server.on("error", async error => {
     if (error.code === "EADDRINUSE") {
-      const url = "http://127.0.0.1:" + port + "/";
+      const url = "http://127.0.0.1:" + activePort + "/";
+      let identity;
       try {
         const response = await fetch(url + "api/identity", { signal: AbortSignal.timeout(1200), redirect: "error" });
-        if (response.ok && (await response.text()) === '{"app":"DivePlan"}') {
-          console.log("DivePlan is already running at " + url);
-          if (!args.includes("--no-browser")) openBrowser(url);
-          return;
-        }
+        if (response.ok) identity = await response.json();
       } catch { /* The occupied port belongs to a different program. */ }
-      console.error("Port " + port + " is already in use. If DivePlan is open, use its existing window.");
+      if (identity?.app === "DivePlan" && identity.release === release) {
+        console.log("DivePlan is already running at " + url);
+        if (!args.includes("--no-browser")) openBrowser(url);
+        return;
+      }
+      if ((identity?.app === "DivePlan" || activePort !== port) && activePort < Math.min(port + 5, 65535)) {
+        if (activePort === port) console.log("A different DivePlan release is open at " + url + " Your saved plan remains at that address.");
+        server.listen(++activePort, "127.0.0.1");
+        return;
+      }
+      console.error("Port " + activePort + " is in use. Close the older window or choose another port with --port.");
     } else console.error(error.message);
     process.exitCode = 1;
   });
-  server.listen(port, "127.0.0.1", () => {
+  server.once("listening", () => {
     const url = "http://127.0.0.1:" + server.address().port + "/";
     console.log("DivePlan is running at " + url + "\nKeep this window open while using the app. Press Ctrl+C to close it.");
     if (!args.includes("--no-browser")) openBrowser(url);
   });
+  server.listen(activePort, "127.0.0.1");
   process.once("SIGINT", () => server.close());
   process.once("SIGTERM", () => server.close());
 }

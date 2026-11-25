@@ -12,6 +12,17 @@ dialog{width:min(425px,calc(100% - 30px));max-height:92vh;color:var(--ink);borde
 @media(max-width:780px){.top-inner{gap:18px;padding:0 16px;min-height:56px}.wordmark{font-size:22px}.brand-mark{width:28px;height:28px}.tabs{gap:12px}.tab{font-size:12px}.tab i{display:none}.button.export{font-size:12px;padding:0 10px;min-height:33px}.workspace{padding:20px 14px}.editor-grid{grid-template-columns:1fr}.preview-panel{grid-row:1}.viewport{min-height:clamp(250px,43vw,370px)}.step-list{max-height:340px}.step-main{padding:7px 0 7px 10px}.steps-body{padding:10px 13px}.timeline-header{min-height:44px}.workspace-foot{flex-direction:column;gap:5px}.mission-head{gap:12px;margin-bottom:16px}.mission-head h1{font-size:32px}.metadata{font-size:10px}.mode-select{min-width:118px}.title-line{gap:4px}.timeline-segment{padding:0 6px}.timeline-segment small{display:none}.sketch-panel .panel-head{flex-wrap:wrap;padding:8px 13px}}
 @media(max-width:485px){.top-inner{flex-wrap:wrap;padding-top:9px;gap:0;justify-content:space-between}.tabs{order:3;width:100%;gap:20px;min-height:37px}.tab i{display:inline-flex}.mission-head{flex-wrap:wrap;align-items:flex-start}.mode-block{flex-direction:row;align-items:center}.mode-select select{min-height:29px}.title-line h1{font-size:30px}.metadata{margin-top:6px}.viewport{min-height:240px}.workspace{padding:16px 10px}.timeline-panel{padding:0 10px 10px}.timeline-segment{padding:0 3px}.timeline-segment span{font-size:10px;gap:3px}.timeline-segment svg{width:12px}.transport{gap:4px}.play-button{padding:0 8px;min-width:60px}.time-read{font-size:10px}.mission-head{row-gap:10px}.workspace-foot>span:first-child{align-items:flex-start}.move-choices{grid-template-columns:repeat(2,1fr)}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.yawRight,.yawLeft {
+  --move-ink: #834828;
+  --move-line: #c4865d;
+  --move-bg: #fae5d5;
+}
+.scene-legend {flex-direction: column; align-items: flex-start; gap: 4px}
+.path-key {display: inline-flex; align-items: center; gap: 7px}
+#heading-readout {color: #ffd19b; font-variant-numeric: tabular-nums}
+.move-choice {min-height: 44px; text-align: left}
+.move-choice small {display: block; margin-top: 2px; font-size: 10px; color: var(--muted)}
+#turn-estimate {margin: 10px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted)}
 .timeline-segment{position:absolute;top:0;bottom:0;border-right:3px solid white}
 .timeline-segment:last-of-type{border-right:0}
 .timeline-segment.narrow{padding-inline:0;border:0}

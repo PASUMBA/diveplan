@@ -28,6 +28,8 @@
     forward:'<path d="m5 18 13-13M8 5h10v10"/>',backward:'<path d="M19 5 6 18m10 0H6V8"/>',
     up:'<path d="M12 20V4m-6 6 6-6 6 6"/>',down:'<path d="M12 4v16m-6-6 6 6 6-6"/>',
     left:'<path d="M21 12H3m6-6-6 6 6 6"/>',right:'<path d="M3 12h18m-6-6 6 6-6 6"/>',
+    yawRight:'<path d="M19 13a7.5 7.5 0 1 0-3 5.5m-1-9 4 4 4-4"/>',
+    yawLeft:'<path d="M5 13a7.5 7.5 0 1 1 3 5.5m1-9-4 4-4-4"/>',
     hold:'<path d="M8 5v14m8-14v14" stroke-width="2.6"/>',
     dots:'<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>',
     copy:'<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
@@ -41,7 +43,7 @@
   document.querySelectorAll("i[data-icon]").forEach(el => { el.outerHTML = icon(el.dataset.icon); });
 
   const mission = window.DiveMission;
-  const scene = window.DiveScene.create($("scene"));
+  const scene = window.DiveScene.create($("scene"), view => { $("view-choice").value = view; });
   const storageKey = "diveplan.workspace.v1";
   const modeNotes = {
     STABILIZE: "Self-leveling with manual depth control.",
@@ -61,8 +63,9 @@
   let path = mission.trajectory(steps), elapsed = 0, playing = false, animation = 0, lastFrame = 0;
   let activeIndex = -1, editingIndex = -1, editingMove = "forward", menuIndex = -1;
   let connection = null, building = false, checkingPorts = false, toastTimer;
-  let stepRows = [], cursor = null;
+  let stepRows = [], cursor = null, hasTurns = false, useDefaultDuration = false;
   const label = move => move === "hold" ? "Hold neutral" : mission.moves[move].label;
+  const turnDirection = move => mission.moves[move].yaw > 0 ? "clockwise" : "counterclockwise";
   const seconds = value => value.toFixed(1) + " s";
   function clock(value, tenths) {
     const ticks = Math.max(0,Math.floor(value * 10 + 1e-6));
@@ -84,6 +87,8 @@
     $("motion-note").textContent = mode === "STABILIZE"
       ? "Preview shows relative motion. Actual travel depends on buoyancy, thrust and water conditions."
       : modeNotes[mode] + " The preview assumes the vehicle stays level. Travel is shown in relative units.";
+    if (hasTurns) $("motion-note").textContent += " Preview heading is relative to the start and assumes " +
+      mission.nominalYawRateDegPerSecond + "°/s at full yaw input. Actual turn angles will vary.";
   }
   function updateTransport() {
     $("play").innerHTML = icon(playing ? "pause" : "play") + "<span>" + (playing ? "Pause" : "Play") + "</span>";
@@ -97,7 +102,15 @@
     $("scrubber").style.setProperty("--progress", progress + "%");
     const fractionalTime = steps.some(step => !Number.isInteger(step.seconds));
     $("clock").textContent = clock(elapsed,fractionalTime) + " / " + clock(path.duration,fractionalTime);
-    $("scrubber").setAttribute("aria-valuetext", seconds(elapsed) + " of " + seconds(path.duration));
+    const heading = scene.render(path,elapsed);
+    let timeDescription = seconds(elapsed) + " of " + seconds(path.duration);
+    if (hasTurns) {
+      const degrees = ((Math.round(heading * 180 / Math.PI) % 360) + 360) % 360;
+      const headingText = "Relative heading " + degrees + "°";
+      $("heading-readout").textContent = headingText;
+      timeDescription += ", " + headingText;
+    }
+    $("scrubber").setAttribute("aria-valuetext", timeDescription);
     if (cursor) { cursor.style.left = "calc(" + progress + "% - " + (progress >= 100 ? 2 : 0) + "px)"; cursor.hidden = elapsed === 0; }
     let index = steps.length ? path.points.findIndex((point,i) => i > 0 && point.t > elapsed) - 1 : -1;
     if (index < 0 && steps.length) index = steps.length - 1;
@@ -106,7 +119,6 @@
       stepRows[index]?.classList.add("active");
       activeIndex = index;
     }
-    scene.render(path,elapsed);
   }
   function pause() {
     playing = false;
@@ -134,7 +146,7 @@
   $("rewind").onclick = () => {pause();seek(0);};
   $("scrubber").oninput = event => seek(Number(event.target.value));
   $("view-choice").onchange = event => scene.setView(event.target.value);
-  function resetCamera(){scene.reset();$("view-choice").value = "iso";}
+  function resetCamera(){scene.reset();}
   $("reset-view").onclick = resetCamera;
   function togglePreview(expand) {
     $("preview-panel").classList.toggle("expanded",expand);
@@ -180,6 +192,8 @@
   }
   function renderEditor() {
     path = mission.trajectory(steps); elapsed = 0; activeIndex = -1;
+    hasTurns = steps.some(step => mission.moves[step.move].yaw);
+    $("heading-readout").hidden = !hasTurns;
     $("mission-title").textContent = name; updateMode(); $("scrubber").max = path.duration || 1;
     $("total").textContent = seconds(path.duration);
     $("leg-counter").textContent = steps.length + (steps.length === 1 ? " movement" : " movements");
@@ -190,7 +204,8 @@
       const edit = document.createElement("button"); edit.className = "step-main";
       edit.setAttribute("aria-label","Edit step " + (i+1) + ", " + label(step.move));
       edit.title = "Edit " + label(step.move);
-      edit.innerHTML = '<span class="ordinal">' + String(i+1).padStart(2,"0") + '</span><span class="move-icon">' + icon(step.move) + '</span><span class="step-label">' + label(step.move) + '<small>' + (step.move==="hold" ? "Neutral input" : step.power + "% input") + '</small></span><span class="step-duration">' + seconds(step.seconds) + '</span>';
+      const input = step.move === "hold" ? "Neutral input" : step.power + (mission.moves[step.move].yaw ? "% yaw input" : "% input");
+      edit.innerHTML = '<span class="ordinal">' + String(i+1).padStart(2,"0") + '</span><span class="move-icon">' + icon(step.move) + '</span><span class="step-label">' + label(step.move) + '<small>' + input + '</small></span><span class="step-duration">' + seconds(step.seconds) + '</span>';
       edit.onclick = () => openStep(i);
       const more = document.createElement("button"); more.className = "icon-button step-menu";
       more.title = "Step " + (i+1) + " actions"; more.setAttribute("aria-label",more.title); more.setAttribute("aria-haspopup","true");
@@ -217,28 +232,53 @@
   $("editor-tab").onclick = () => showTab(false);
   $("sketch-tab").onclick = () => showTab(true);
 
-  const choices = ["forward","backward","left","right","up","down","hold"];
+  const choices = ["forward","backward","left","right","up","down","yawLeft","yawRight","hold"];
+  function updateTurnEstimate() {
+    const note = $("turn-estimate");
+    const isTurn = Boolean(mission.moves[editingMove].yaw);
+    note.hidden = !isTurn;
+    if (!isTurn) return;
+    const duration = $("step-seconds").valueAsNumber;
+    const power = $("step-power").valueAsNumber;
+    note.textContent = $("step-seconds").validity.valid && $("step-power").validity.valid
+      ? "Estimated turn of " + Number((duration * power / 100 * mission.nominalYawRateDegPerSecond).toFixed(2)) +
+        "° " + turnDirection(editingMove) + ". The sketch sends timed yaw input."
+      : "Enter a valid duration and yaw input to estimate the turn.";
+  }
   function updateChoices() {
     $("move-choices").replaceChildren();
     for (const key of choices) {
       const button = document.createElement("button"); button.type = "button";
       button.className = "move-choice " + key; button.dataset.move = key;
-      button.setAttribute("aria-pressed",String(key === editingMove)); button.innerHTML = icon(key) + label(key);
+      button.setAttribute("aria-pressed",String(key === editingMove));
+      if (mission.moves[key].yaw) {
+        const direction = turnDirection(key);
+        button.setAttribute("aria-label",label(key) + ", " + direction);
+        button.innerHTML = icon(key) + "<span>" + label(key) + "<small>" +
+          direction[0].toUpperCase() + direction.slice(1) + "</small></span>";
+      } else button.innerHTML = icon(key) + label(key);
       button.onclick = () => {
         if (editingMove === key) return;
-        editingMove = key; setPower(mission.moves[key].power); updateChoices();
+        editingMove = key; setPower(mission.moves[key].power);
+        if (useDefaultDuration) $("step-seconds").value = mission.moves[key].seconds;
+        updateChoices();
         $("move-choices").querySelector('[data-move="'+key+'"]').focus();
       };
       $("move-choices").append(button);
     }
     $("power-field").hidden = editingMove === "hold";
     $("step-power").disabled = editingMove === "hold";
+    const inputLabel = mission.moves[editingMove].yaw ? "Yaw input" : "Pilot input";
+    $("input-label").textContent = inputLabel;
+    $("power-slider").setAttribute("aria-label",inputLabel + " percentage");
+    updateTurnEstimate();
   }
   function setPower(value) { $("step-power").value = value || 1; $("power-slider").value = value || 1; }
-  $("step-power").oninput = () => { $("power-slider").value = $("step-power").value; };
-  $("power-slider").oninput = () => { $("step-power").value = $("power-slider").value; };
+  $("step-seconds").oninput = () => { useDefaultDuration = false; updateTurnEstimate(); };
+  $("step-power").oninput = () => { $("power-slider").value = $("step-power").value; updateTurnEstimate(); };
+  $("power-slider").oninput = () => { $("step-power").value = $("power-slider").value; updateTurnEstimate(); };
   function openStep(index) {
-    pause(); closeMenu(); editingIndex = index;
+    pause(); closeMenu(); editingIndex = index; useDefaultDuration = index < 0;
     const step = index < 0 ? {move:"forward",...mission.moves.forward} : steps[index];
     editingMove = step.move; $("step-seconds").value = step.seconds; setPower(step.power);
     $("step-dialog-title").textContent = index < 0 ? "Add movement" : "Edit movement " + String(index+1).padStart(2,"0");

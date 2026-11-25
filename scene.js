@@ -3,8 +3,8 @@
   'use strict';
 
   const TAU = Math.PI * 2;
-  const BASE_CAMERA = { azimuth: 0.83, elevation: 0.47 };
-  const ZERO = { x: 0, y: 0, z: 0, t: 0 };
+  const BASE_CAMERA = { azimuth: -0.83, elevation: 0.47 };
+  const ZERO = { x: 0, y: 0, z: 0, t: 0, heading: 0 };
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const plus = (a, b) => a.map((v, i) => v + b[i]);
   const minus = (a, b) => a.map((v, i) => v - b[i]);
@@ -23,7 +23,7 @@
     glass: [37, 80, 91], lens: [44, 126, 133], reflection: [155, 226, 218]
   };
 
-  // Faces stay in the vehicle coordinate frame, so an animation only moves a cached rendering.
+  // Vehicle geometry is defined in the body frame, with the bow at positive X.
   function makeVehicle() {
     const faces = [];
     const face = (vertices, normal, color, twoSided = false) => {
@@ -189,16 +189,19 @@
   let model;
   function basisFor(azimuth,elevation) {
     const s=Math.sin(azimuth), c=Math.cos(azimuth), h=Math.cos(elevation), v=Math.sin(elevation);
-    return { eye:[c*h,s*h,v], right:[-s,c,0], up:[-c*v,-s*v,h] };
+    // Forward / starboard / up is left-handed. In top view, +X points up and +Y right.
+    return { eye:[c*h,s*h,v], right:[s,-c,0], up:[-c*v,-s*v,h] };
   }
 
-  function vehicleSprite(basis, scale, dpr) {
+  function vehicleSprite(basis, scale, dpr, previousSurface) {
     model ||= makeVehicle();
-    const surface=document.createElement('canvas');
+    const surface=previousSurface || document.createElement('canvas');
     const size=Math.ceil(3.6*scale)+8;
-    surface.width=Math.ceil(size*dpr); surface.height=Math.ceil(size*dpr);
+    const pixels=Math.ceil(size*dpr);
+    if(surface.width!==pixels || surface.height!==pixels){surface.width=pixels;surface.height=pixels;}
     const ctx=surface.getContext('2d');
     ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,pixels/dpr,pixels/dpr);
     ctx.translate(size/2,size/2);
     ctx.lineJoin='round';
     const light=unit(plus(plus(times(basis.right,-.54),times(basis.eye,.32)),[0,0,1]));
@@ -226,23 +229,22 @@
     return { surface, size };
   }
 
-  function trackPosition(points,time) {
-    if (time<=points[0].t) return vector(points[0]);
-    for(let i=1;i<points.length;i++) {
-      const end=points[i];
-      if(time<=end.t) {
-        const start=points[i-1], span=end.t-start.t;
-        return mix(vector(start),vector(end),span>0 ? clamp((time-start.t)/span,0,1) : 1);
-      }
-    }
-    return vector(points[points.length-1]);
+  function trackPose(points,time) {
+    const index=points.findIndex(p=>p.t>=time);
+    const end=index<0 ? points[points.length-1] : points[index];
+    const start=index>0 ? points[index-1] : end;
+    const span=end.t-start.t;
+    const fraction=span>0 ? clamp((time-start.t)/span,0,1) : 1;
+    const from=start.heading ?? 0, to=end.heading ?? 0;
+    return {position:mix(vector(start),vector(end),fraction), heading:from+(to-from)*fraction};
   }
 
-  function create(canvas) {
+  function create(canvas, onViewChange) {
     const ctx=canvas.getContext('2d');
     let azimuth=BASE_CAMERA.azimuth, elevation=BASE_CAMERA.elevation, zoom=1;
     let trajectory={ points:[ZERO], duration:0 }, time=0, sprite=null, spriteKey='';
-    let drag=null, observer=null, pending=0;
+    let drag=null, observer=null, pending=0, view='iso';
+    let pose={position:[0,0,0],heading:0}, hasTurns=false;
     canvas.style.touchAction='none';
     canvas.style.cursor='grab';
     if (!canvas.hasAttribute('tabindex')) canvas.tabIndex=0;
@@ -265,7 +267,8 @@
       const projected=positions.map(xy);
       const extents=[0,1].map(axis=>projected.reduce((b,p)=>[Math.min(b[0],p[axis]),Math.max(b[1],p[axis])],[Infinity,-Infinity]));
       const [bx,by]=extents;
-      const scale=Math.min(w*.86/Math.max(bx[1]-bx[0]+glyph*3.25,glyph*3.85),h*.88/Math.max(by[1]-by[0]+glyph*2.22,glyph*3.2))*zoom;
+      const verticalPadding=glyph*(hasTurns ? 3.3 : 2.22);
+      const scale=Math.min(w*.86/Math.max(bx[1]-bx[0]+glyph*3.25,glyph*3.85),h*.88/Math.max(by[1]-by[0]+verticalPadding,glyph*3.2))*zoom;
       const cx=w*.5-(bx[0]+bx[1])*.5*scale, cy=h*.487-(by[0]+by[1])*.5*scale;
       const screen=p=>{const q=xy(p);return [cx+q[0]*scale,cy+q[1]*scale];};
 
@@ -305,7 +308,7 @@
         ctx.fillStyle='rgba(148,203,198,'+(.09+random()*.20)+')';
         ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fill();
       }
-      const vehicle=trackPosition(points,time), vehiclePoint=screen(vehicle);
+      const vehicle=pose.position, vehiclePoint=screen(vehicle);
       const shadow=screen([vehicle[0],vehicle[1],floor]);
       const altitude=(vehicle[2]-floor)/glyph;
       ctx.save();
@@ -353,10 +356,25 @@
           ctx.beginPath();ctx.arc(...p,2.7,0,TAU);ctx.fillStyle='#9ce9d3';ctx.fill();
         }
       }
+      if(hasTurns) {
+        // The arrow extends ahead of the bow, including when a turn has no positional track.
+        const dir=[Math.cos(pose.heading),Math.sin(pose.heading),0];
+        const base=screen(plus(vehicle,times(dir,1.05*glyph)));
+        const tip=screen(plus(vehicle,times(dir,1.62*glyph)));
+        const dx=tip[0]-base[0],dy=tip[1]-base[1],length=Math.hypot(dx,dy);
+        if(length>3) {
+          const ux=dx/length,uy=dy/length;
+          strokeLine(base,tip,'#ffd19b',2);
+          ctx.beginPath();ctx.moveTo(tip[0]-7*ux-3.6*uy,tip[1]-7*uy+3.6*ux);
+          ctx.lineTo(...tip);ctx.lineTo(tip[0]-7*ux+3.6*uy,tip[1]-7*uy-3.6*ux);
+          ctx.strokeStyle='#ffd19b';ctx.lineWidth=2;ctx.stroke();
+        }
+      }
       const modelScale=scale*glyph;
-      const cache=[azimuth,elevation,modelScale,dpr].join(',');
+      const bodyAzimuth=azimuth-(pose.heading % TAU);
+      const cache=[bodyAzimuth,elevation,modelScale,dpr].join(',');
       if(!sprite || cache!==spriteKey) {
-        sprite=vehicleSprite(basis,modelScale,dpr);spriteKey=cache;
+        sprite=vehicleSprite(basisFor(bodyAzimuth,elevation),modelScale,dpr,sprite?.surface);spriteKey=cache;
       }
       ctx.drawImage(sprite.surface,vehiclePoint[0]-sprite.size/2,vehiclePoint[1]-sprite.size/2,sprite.size,sprite.size);
 
@@ -382,14 +400,21 @@
       if(!pending) pending=window.requestAnimationFrame(()=>{ pending=0;draw(); });
     }
     function render(newTrajectory, elapsedSeconds=0) {
+      const points=newTrajectory?.points?.length ? newTrajectory.points : [ZERO];
+      if(trajectory!==newTrajectory) hasTurns=points.some((p,i)=>i>0 && p.heading!==points[i-1].heading);
       trajectory=newTrajectory;time=Number.isFinite(elapsedSeconds) ? elapsedSeconds : 0;
+      pose=trackPose(points,time);
       draw();
+      return pose.heading;
+    }
+    function markView(name) {
+      if(view!==name) { view=name;onViewChange?.(name); }
     }
     function setView(name) {
-      if(name==='top'){azimuth=Math.PI/2;elevation=Math.PI/2;}
+      if(name==='top'){azimuth=Math.PI;elevation=Math.PI/2;}
       else if(name==='side'){azimuth=Math.PI/2;elevation=.035;}
       else {azimuth=BASE_CAMERA.azimuth;elevation=BASE_CAMERA.elevation;}
-      zoom=1;draw();
+      markView(name);zoom=1;draw();
     }
     const reset=()=>setView('iso');
     function down(event) {
@@ -398,8 +423,10 @@
     }
     function move(event) {
       if(!drag || event.pointerId!==drag.id) return;
-      azimuth-=(event.clientX-drag.x)*.009;
-      elevation=clamp(elevation+(event.clientY-drag.y)*.009,.025,Math.PI/2);
+      const nextAzimuth=azimuth+(event.clientX-drag.x)*.009;
+      const nextElevation=clamp(elevation+(event.clientY-drag.y)*.009,.025,Math.PI/2);
+      if(nextAzimuth!==azimuth || nextElevation!==elevation) markView('orbit');
+      azimuth=nextAzimuth;elevation=nextElevation;
       drag.x=event.clientX;drag.y=event.clientY;schedule();
     }
     function up(event) {
@@ -414,6 +441,7 @@
       zoom=clamp(zoom*Math.exp(-delta*.0018),.45,2.75);schedule();
     }
     function key(event) {
+      const oldAzimuth=azimuth, oldElevation=elevation;
       switch(event.key) {
         case 'ArrowLeft': azimuth-=.15;break;
         case 'ArrowRight': azimuth+=.15;break;
@@ -421,9 +449,10 @@
         case 'ArrowDown': elevation=clamp(elevation-.12,.025,Math.PI/2);break;
         case '+': case '=': zoom=clamp(zoom*1.1,.45,2.75);break;
         case '-': zoom=clamp(zoom/1.1,.45,2.75);break;
-        case 'Home': reset();break;
+        case 'Home': event.preventDefault();reset();return;
         default: return;
       }
+      if(oldAzimuth!==azimuth || oldElevation!==elevation) markView('orbit');
       event.preventDefault(); schedule();
     }
     const events=[['pointerdown',down],['pointermove',move],['pointerup',up],['pointercancel',up],['lostpointercapture',up],['wheel',wheel,{passive:false}],['keydown',key]];

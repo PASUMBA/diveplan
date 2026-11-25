@@ -3,6 +3,9 @@
   "use strict";
 
   const modes = Object.freeze({STABILIZE: 0, MANUAL: 19, ACRO: 1});
+  // Assumed full-input turn rate for the preview. The firmware sends timed joystick input.
+  const nominalYawRateDegPerSecond = 90;
+  const previewYawRate = nominalYawRateDegPerSecond * Math.PI / 180;
   const moves = Object.freeze({
     forward:  Object.freeze({label: "Forward",  seconds: 3, power: 30, x:  1, y:  0, z:  0}),
     backward: Object.freeze({label: "Backward", seconds: 3, power: 30, x: -1, y:  0, z:  0}),
@@ -10,6 +13,8 @@
     left:     Object.freeze({label: "Left",     seconds: 3, power: 30, x:  0, y: -1, z:  0}),
     up:       Object.freeze({label: "Up",       seconds: 2, power: 50, x:  0, y:  0, z:  1}),
     down:     Object.freeze({label: "Down",     seconds: 2, power: 50, x:  0, y:  0, z: -1}),
+    yawRight: Object.freeze({label: "Rotate right", seconds: 2, power: 30, x: 0, y: 0, z: 0, yaw: 1}),
+    yawLeft:  Object.freeze({label: "Rotate left",  seconds: 2, power: 30, x: 0, y: 0, z: 0, yaw: -1}),
     hold:     Object.freeze({label: "Hold",     seconds: 2, power:  0, x:  0, y:  0, z:  0})
   });
 
@@ -48,7 +53,7 @@
   }
 
   function trajectory(steps) {
-    const points = [{x: 0, y: 0, z: 0, t: 0}];
+    const points = [{x: 0, y: 0, z: 0, t: 0, heading: 0}];
     if (Array.isArray(steps) && steps.length === 0) return {points, duration: 0};
     const problem = validate(steps);
     if (problem) throw new Error(problem);
@@ -60,11 +65,14 @@
       const direction = moves[step.move];
       const distance = step.seconds * step.power / 100;
       const previous = points[points.length - 1];
+      const cos = Math.cos(previous.heading);
+      const sin = Math.sin(previous.heading);
       points.push({
-        x: previous.x + direction.x * distance,
-        y: previous.y + direction.y * distance,
+        x: previous.x + (cos * direction.x - sin * direction.y) * distance,
+        y: previous.y + (sin * direction.x + cos * direction.y) * distance,
         z: previous.z + direction.z * distance,
-        t: elapsedMs / 1000
+        t: elapsedMs / 1000,
+        heading: previous.heading + (direction.yaw || 0) * distance * previewYawRate
       });
     }
     return {points, duration: elapsedMs / 1000};
@@ -79,8 +87,9 @@
       const surge = direction.x * horizontalInput;
       const sway = direction.y * horizontalInput;
       const heave = 500 + direction.z * Math.round(power * 5);
+      const yaw = (direction.yaw || 0) * horizontalInput;
       const durationMs = Math.round(seconds * 1000);
-      return `  {"${move}", ${durationMs}, ${surge}, ${sway}, ${heave}},`;
+      return `  {"${move}", ${durationMs}, ${surge}, ${sway}, ${heave}, ${yaw}},`;
     });
     return firmwareTemplate.replace("@@DIVEPLAN_MISSION_MODE@@", String(modes[mode]))
       .replace("@@DIVEPLAN_MISSION_LEGS@@", lines.join("\n"));
@@ -119,10 +128,11 @@ struct Leg {
   int16_t surge;
   int16_t sway;
   int16_t heave;
+  int16_t yaw;
 };
 
-constexpr Leg kUpLeg{"up", 2000, 0, 0, 750};
-constexpr Leg kUp10Leg{"up", 10000, kUpLeg.surge, kUpLeg.sway, kUpLeg.heave};
+constexpr Leg kUpLeg{"up", 2000, 0, 0, 750, 0};
+constexpr Leg kUp10Leg{"up", 10000, kUpLeg.surge, kUpLeg.sway, kUpLeg.heave, kUpLeg.yaw};
 constexpr Leg kLegs[] = {
 @@DIVEPLAN_MISSION_LEGS@@
 };
@@ -153,7 +163,7 @@ class AuvPilot {
     if (now - lastPilotSent_ >= kPilotInterval) {
       if (state_ == State::Running) {
         const Leg &leg = legs_[legIndex_];
-        sendPilot(leg.surge, leg.heave, leg.sway);
+        sendPilot(leg.surge, leg.heave, leg.sway, leg.yaw);
       } else if (state_ == State::SettingMode || state_ == State::Arming) {
         sendPilot(0, kNeutralHeave);
       }
@@ -242,12 +252,13 @@ class AuvPilot {
     send(message);
   }
 
-  void sendPilot(int16_t surge, int16_t heave, int16_t sway = 0) {
+  void sendPilot(int16_t surge, int16_t heave, int16_t sway = 0, int16_t yaw = 0) {
     mavlink_manual_control_t control{};
     control.target = vehicleSystem_;
     control.x = surge;
     control.y = sway;
     control.z = heave;
+    control.r = yaw;
     mavlink_message_t message;
     mavlink_msg_manual_control_encode(kPilotSystem, kPilotComponent, &message, &control);
     send(message);
@@ -581,7 +592,7 @@ class AuvPilot {
           startDisarming(now);
           return;
         }
-        if (now - lastPilotSent_ > kMaxPilotGap) {
+        if (now - lastPilotSent_ > kMaxPilotGap || now - lastPilotSent_ >= pilotTimeout_ * 1000.0f) {
           Serial.println("Pilot stream deadline missed. Disarming.");
           startDisarming(now);
           return;
@@ -594,6 +605,11 @@ class AuvPilot {
           }
           const Leg &leg = legs_[legIndex_];
           legEndsAt_ += leg.durationMs;
+          if (now - runStarted_ >= legEndsAt_) {
+            Serial.println("Missed a complete movement window. Disarming.");
+            startDisarming(now);
+            return;
+          }
           Serial.printf("Running: %s\n", leg.name);
           lastPilotSent_ = now - kPilotInterval;
         }
@@ -619,7 +635,7 @@ void loop() {
 }
 `;
 
-  const api = Object.freeze({moves, modes, defaults, validate, trajectory, generate});
+  const api = Object.freeze({moves, modes, nominalYawRateDegPerSecond, defaults, validate, trajectory, generate});
   if (typeof window !== "undefined") window.DiveMission = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
