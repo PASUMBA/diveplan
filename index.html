@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#10272e">
   <title>DivePlan · AUV mission editor</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css">
-  <script defer src="mission.js"></script>
+  <link rel="stylesheet" href="style.css?v=full-turn"></script>
+  <script defer src="mission.js?v=full-turn"></script>
   <script defer src="scene.js"></script>
-  <script defer src="app.js"></script>
+  <script defer src="app.js?v=full-turn"></script>
 </head>
 <body>
   <header class="topbar">
@@ -42,11 +42,11 @@
         <section class="panel steps-panel">
           <header class="panel-head"><h2><i data-icon="list"></i>Movement sequence</h2><button id="presets" class="text-button">Presets<i data-icon="chevronDown"></i></button></header>
           <div class="steps-body">
-            <div class="columns"><span>Command</span><span>Duration</span></div>
+            <div class="columns"><span>Command</span><span id="time-column">Duration</span></div>
             <ol id="steps" class="step-list" aria-label="Movement sequence"></ol>
             <button id="add-step" class="add-step"><i data-icon="plus"></i>Add movement</button>
           </div>
-          <footer class="steps-footer"><span><i data-icon="clock"></i> Total duration</span><strong id="total">10.0 s</strong></footer>
+          <footer class="steps-footer"><span><i data-icon="clock"></i><span id="total-label">Total duration</span></span><strong id="total">10.0 s</strong></footer>
         </section>
         <section id="preview-panel" class="panel preview-panel">
           <header class="panel-head"><h2><i data-icon="cube"></i>3D preview</h2><div class="preview-actions"><div class="select-wrap view-choice"><select id="view-choice" aria-label="Camera view"><option value="iso">Isometric</option><option value="top">Top</option><option value="side">Side</option><option value="orbit" disabled>Free orbit</option></select><i data-icon="chevronDown"></i></div><button class="icon-button" id="expand" aria-label="Expand preview" aria-expanded="false" title="Expand preview"><i data-icon="expand"></i></button></div></header>
@@ -81,7 +81,7 @@
       <div class="dialog-head"><h2 id="step-dialog-title">Add movement</h2><button type="button" data-close="step-dialog" class="icon-button" aria-label="Close"><i data-icon="x"></i></button></div>
       <div class="dialog-body">
         <fieldset><legend>Movement</legend><div id="move-choices" class="move-choices"></div></fieldset>
-        <div class="field-line"><label for="step-seconds">Duration</label><div class="number-unit"><input id="step-seconds" type="number" min="0.1" max="600" step="0.1" required><span>s</span></div></div>
+        <div class="field-line"><label for="step-seconds" id="seconds-label">Duration</label><div class="number-unit"><input id="step-seconds" type="number" min="0.1" max="600" step="0.1" required><span>s</span></div></div>
         <div id="power-field"><div class="field-line"><label for="step-power" id="input-label">Pilot input</label><div class="number-unit"><input id="step-power" type="number" min="1" max="100" step="1" required><span>%</span></div></div><input type="range" id="power-slider" aria-label="Pilot input percentage" min="1" max="100" step="1"></div>
         <p id="turn-estimate" role="status" hidden></p>
         <p id="step-issue" class="error-message" role="alert"></p>

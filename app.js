@@ -37,6 +37,8 @@
     route:'<circle cx="5" cy="17" r="2"/><circle cx="19" cy="6" r="2"/><path d="M5 15v-4h14V8"/>',
     refresh:'<path d="M19 8a8 8 0 1 0 0 8m.5-12v5h-5"/>'
   };
+  icons.spinRight = icons.yawRight;
+  icons.spinLeft = icons.yawLeft;
   function icon(name) {
     return '<i data-icon="' + name + '" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + icons[name] + '</svg></i>';
   }
@@ -63,10 +65,12 @@
   let path = mission.trajectory(steps), elapsed = 0, playing = false, animation = 0, lastFrame = 0;
   let activeIndex = -1, editingIndex = -1, editingMove = "forward", menuIndex = -1;
   let connection = null, building = false, checkingPorts = false, toastTimer;
-  let stepRows = [], cursor = null, hasTurns = false, useDefaultDuration = false;
+  let stepRows = [], cursor = null, hasTimedTurns = false, hasFullTurns = false, useDefaultDuration = false;
   const label = move => move === "hold" ? "Hold neutral" : mission.moves[move].label;
   const turnDirection = move => mission.moves[move].yaw > 0 ? "clockwise" : "counterclockwise";
+  const isFullTurn = move => Boolean(mission.moves[move].fullTurn);
   const seconds = value => value.toFixed(1) + " s";
+  const totalTime = () => seconds(path.duration) + (hasFullTurns ? " preview" : "");
   function clock(value, tenths) {
     const ticks = Math.max(0,Math.floor(value * 10 + 1e-6));
     const total = Math.floor(ticks / 10);
@@ -87,8 +91,10 @@
     $("motion-note").textContent = mode === "STABILIZE"
       ? "Preview shows relative motion. Actual travel depends on buoyancy, thrust and water conditions."
       : modeNotes[mode] + " The preview assumes the vehicle stays level. Travel is shown in relative units.";
-    if (hasTurns) $("motion-note").textContent += " Preview heading is relative to the start and assumes " +
-      mission.nominalYawRateDegPerSecond + "°/s at full yaw input. Actual turn angles will vary.";
+    if (hasTimedTurns || hasFullTurns) $("motion-note").textContent += " Preview heading is relative to the start and assumes " +
+      mission.nominalYawRateDegPerSecond + "°/s at full yaw input.";
+    if (hasTimedTurns) $("motion-note").textContent += " Actual angles for timed rotations will vary.";
+    if (hasFullTurns) $("motion-note").textContent += " Full-turn times are estimates.";
   }
   function updateTransport() {
     $("play").innerHTML = icon(playing ? "pause" : "play") + "<span>" + (playing ? "Pause" : "Play") + "</span>";
@@ -100,11 +106,11 @@
     $("scrubber").value = elapsed;
     const progress = path.duration ? elapsed / path.duration * 100 : 0;
     $("scrubber").style.setProperty("--progress", progress + "%");
-    const fractionalTime = steps.some(step => !Number.isInteger(step.seconds));
+    const fractionalTime = path.points.some(point => !Number.isInteger(point.t));
     $("clock").textContent = clock(elapsed,fractionalTime) + " / " + clock(path.duration,fractionalTime);
     const heading = scene.render(path,elapsed);
     let timeDescription = seconds(elapsed) + " of " + seconds(path.duration);
-    if (hasTurns) {
+    if (hasTimedTurns || hasFullTurns) {
       const degrees = ((Math.round(heading * 180 / Math.PI) % 360) + 360) % 360;
       const headingText = "Relative heading " + degrees + "°";
       $("heading-readout").textContent = headingText;
@@ -167,14 +173,18 @@
     steps.forEach((step,i) => {
       const segment = document.createElement("button");
       segment.className = "timeline-segment " + step.move;
-      const share = step.seconds / path.duration;
-      segment.style.left = (path.points[i].t / path.duration * 100) + "%";
+      const start = path.points[i].t;
+      const duration = path.points[i+1].t - start;
+      const fullTurn = isFullTurn(step.move);
+      const share = duration / path.duration;
+      segment.style.left = (start / path.duration * 100) + "%";
       segment.style.width = (share * 100) + "%";
       if (share < .06) segment.classList.add("narrow");
-      segment.title = "Seek to " + label(step.move) + " at " + seconds(path.points[i].t);
+      segment.title = "Seek to " + label(step.move) + " at " + seconds(start) +
+        (fullTurn ? ". Preview duration about " + seconds(duration) : "");
       segment.setAttribute("aria-label", segment.title);
-      segment.innerHTML = '<span>' + icon(step.move) + label(step.move) + '</span><small>' + seconds(step.seconds) + '</small>';
-      segment.onclick = () => { pause(); seek(path.points[i].t); };
+      segment.innerHTML = '<span>' + icon(step.move) + label(step.move) + '</span><small>' + (fullTurn ? "~" : "") + seconds(duration) + '</small>';
+      segment.onclick = () => { pause(); seek(start); };
       line.append(segment);
     });
     cursor = document.createElement("div"); cursor.className = "time-cursor"; cursor.hidden = true; line.append(cursor);
@@ -187,25 +197,31 @@
   function refreshSketch() {
     const problem = mission.validate(steps,mode);
     $("sketch-code").textContent = problem || mission.generate(steps,mode);
-    $("sketch-meta").textContent = ["ESP32 Dev Module",mode,steps.length + " movements",seconds(path.duration),"MAVLink 2 · 20 Hz"].join("   /   ");
+    $("sketch-meta").textContent = ["ESP32 Dev Module",mode,steps.length + " movements",totalTime(),"MAVLink 2 · 20 Hz"].join("   /   ");
     $("download-code").disabled = $("copy-code").disabled = Boolean(problem);
   }
   function renderEditor() {
     path = mission.trajectory(steps); elapsed = 0; activeIndex = -1;
-    hasTurns = steps.some(step => mission.moves[step.move].yaw);
-    $("heading-readout").hidden = !hasTurns;
+    hasFullTurns = steps.some(step => isFullTurn(step.move));
+    hasTimedTurns = steps.some(step => mission.moves[step.move].yaw && !isFullTurn(step.move));
+    $("heading-readout").hidden = !hasTimedTurns && !hasFullTurns;
     $("mission-title").textContent = name; updateMode(); $("scrubber").max = path.duration || 1;
     $("total").textContent = seconds(path.duration);
+    $("total-label").textContent = hasFullTurns ? "Preview duration" : "Total duration";
+    $("time-column").textContent = hasFullTurns ? "Time" : "Duration";
     $("leg-counter").textContent = steps.length + (steps.length === 1 ? " movement" : " movements");
     $("add-step").disabled = steps.length >= 100;
     $("steps").replaceChildren(); stepRows = [];
     steps.forEach((step,i) => {
       const row = document.createElement("li"); row.className = "step " + step.move;
       const edit = document.createElement("button"); edit.className = "step-main";
-      edit.setAttribute("aria-label","Edit step " + (i+1) + ", " + label(step.move));
+      const fullTurn = isFullTurn(step.move);
+      const time = seconds(step.seconds) + (fullTurn ? " limit" : "");
+      const input = fullTurn ? step.power + "% max yaw input"
+        : step.move === "hold" ? "Neutral input" : step.power + (mission.moves[step.move].yaw ? "% yaw input" : "% input");
+      edit.setAttribute("aria-label","Edit step " + (i+1) + ", " + label(step.move) + (fullTurn ? ", " + time + ", " + input : ""));
       edit.title = "Edit " + label(step.move);
-      const input = step.move === "hold" ? "Neutral input" : step.power + (mission.moves[step.move].yaw ? "% yaw input" : "% input");
-      edit.innerHTML = '<span class="ordinal">' + String(i+1).padStart(2,"0") + '</span><span class="move-icon">' + icon(step.move) + '</span><span class="step-label">' + label(step.move) + '<small>' + input + '</small></span><span class="step-duration">' + seconds(step.seconds) + '</span>';
+      edit.innerHTML = '<span class="ordinal">' + String(i+1).padStart(2,"0") + '</span><span class="move-icon">' + icon(step.move) + '</span><span class="step-label">' + label(step.move) + '<small>' + input + '</small></span><span class="step-duration">' + time + '</span>';
       edit.onclick = () => openStep(i);
       const more = document.createElement("button"); more.className = "icon-button step-menu";
       more.title = "Step " + (i+1) + " actions"; more.setAttribute("aria-label",more.title); more.setAttribute("aria-haspopup","true");
@@ -232,7 +248,7 @@
   $("editor-tab").onclick = () => showTab(false);
   $("sketch-tab").onclick = () => showTab(true);
 
-  const choices = ["forward","backward","left","right","up","down","yawLeft","yawRight","hold"];
+  const choices = ["forward","backward","left","right","up","down","yawLeft","yawRight","spinLeft","spinRight","hold"];
   function updateTurnEstimate() {
     const note = $("turn-estimate");
     const isTurn = Boolean(mission.moves[editingMove].yaw);
@@ -240,7 +256,16 @@
     if (!isTurn) return;
     const duration = $("step-seconds").valueAsNumber;
     const power = $("step-power").valueAsNumber;
-    note.textContent = $("step-seconds").validity.valid && $("step-power").validity.valid
+    const valid = $("step-seconds").validity.valid && $("step-power").validity.valid;
+    if (isFullTurn(editingMove)) {
+      note.textContent = "Tracks heading to complete one 360° turn. The mission aborts if the time limit expires.";
+      if (valid) {
+        const preview = mission.trajectory([{move:editingMove,seconds:duration,power}]).duration;
+        note.textContent += " Preview duration is about " + seconds(preview) + (preview > duration ? ", above the time limit." : ".");
+      }
+      return;
+    }
+    note.textContent = valid
       ? "Estimated turn of " + Number((duration * power / 100 * mission.nominalYawRateDegPerSecond).toFixed(2)) +
         "° " + turnDirection(editingMove) + ". The sketch sends timed yaw input."
       : "Enter a valid duration and yaw input to estimate the turn.";
@@ -253,12 +278,14 @@
       button.setAttribute("aria-pressed",String(key === editingMove));
       if (mission.moves[key].yaw) {
         const direction = turnDirection(key);
-        button.setAttribute("aria-label",label(key) + ", " + direction);
+        const description = isFullTurn(key) ? "360° " + direction : direction;
+        button.setAttribute("aria-label",label(key) + ", " + description);
         button.innerHTML = icon(key) + "<span>" + label(key) + "<small>" +
-          direction[0].toUpperCase() + direction.slice(1) + "</small></span>";
+          description[0].toUpperCase() + description.slice(1) + "</small></span>";
       } else button.innerHTML = icon(key) + label(key);
       button.onclick = () => {
         if (editingMove === key) return;
+        if (isFullTurn(editingMove) !== isFullTurn(key)) useDefaultDuration = true;
         editingMove = key; setPower(mission.moves[key].power);
         if (useDefaultDuration) $("step-seconds").value = mission.moves[key].seconds;
         updateChoices();
@@ -268,7 +295,9 @@
     }
     $("power-field").hidden = editingMove === "hold";
     $("step-power").disabled = editingMove === "hold";
-    const inputLabel = mission.moves[editingMove].yaw ? "Yaw input" : "Pilot input";
+    const fullTurn = isFullTurn(editingMove);
+    $("seconds-label").textContent = fullTurn ? "Time limit" : "Duration";
+    const inputLabel = fullTurn ? "Max yaw input" : mission.moves[editingMove].yaw ? "Yaw input" : "Pilot input";
     $("input-label").textContent = inputLabel;
     $("power-slider").setAttribute("aria-label",inputLabel + " percentage");
     updateTurnEstimate();
@@ -388,7 +417,7 @@
   $("refresh-ports").onclick=refreshPorts; $("port").onchange=buildControls;
   $("open-export").onclick=() => {
     pause();closeMenu();
-    $("export-meta").textContent = steps.length ? mode + " · " + steps.length + (steps.length===1?" movement · ":" movements · ") + seconds(path.duration) : "Add a movement to export this mission.";
+    $("export-meta").textContent = steps.length ? mode + " · " + steps.length + (steps.length===1?" movement · ":" movements · ") + totalTime() : "Add a movement to export this mission.";
     $("build-log").hidden=true;$("export-dialog").showModal();buildControls();refreshPorts();
   };
   $("export-dialog").addEventListener("cancel",event=>{if(building)event.preventDefault();});
