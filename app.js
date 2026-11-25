@@ -53,12 +53,17 @@
     ACRO: "Body-rate control with manual depth control."
   };
   let name = "Tank maneuver", mode = "STABILIZE", steps = mission.defaults();
+  let runOptions = {autoStart:true, repeatIntervalSeconds:20};
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey));
     if (stored && Array.isArray(stored.steps) && Object.hasOwn(modeNotes, stored.mode) &&
         (!stored.steps.length || !mission.validate(stored.steps, stored.mode))) {
       steps = stored.steps;
       mode = stored.mode;
+      if (typeof stored.autoStart === "boolean") runOptions.autoStart = stored.autoStart;
+      if (Number.isInteger(stored.repeatIntervalSeconds) && stored.repeatIntervalSeconds >= 1 && stored.repeatIntervalSeconds <= 3600) {
+        runOptions.repeatIntervalSeconds = stored.repeatIntervalSeconds;
+      }
       if (typeof stored.name === "string" && stored.name.trim()) name = stored.name.trim().slice(0,56);
     }
   } catch { /* The editor also runs with browser storage unavailable. */ }
@@ -81,7 +86,7 @@
     toastTimer = setTimeout(() => { $("toast").hidden = true; }, 2500);
   }
   function save() {
-    try { localStorage.setItem(storageKey, JSON.stringify({name,mode,steps})); }
+    try { localStorage.setItem(storageKey, JSON.stringify({name,mode,steps,...runOptions})); }
     catch { $("saved").textContent = "Browser storage unavailable"; }
   }
   function updateMode() {
@@ -196,9 +201,11 @@
   }
   function refreshSketch() {
     const problem = mission.validate(steps,mode);
-    $("sketch-code").textContent = problem || mission.generate(steps,mode);
-    $("sketch-meta").textContent = ["ESP32 Dev Module",mode,steps.length + " movements",totalTime(),"MAVLink 2 · 20 Hz"].join("   /   ");
-    $("download-code").disabled = $("copy-code").disabled = Boolean(problem);
+    const runProblem = mission.validateOptions(runOptions);
+    $("sketch-code").textContent = problem || runProblem || mission.generate(steps,mode,runOptions);
+    const runLabel = runOptions.autoStart ? "Auto-start · repeats every " + runOptions.repeatIntervalSeconds + " s" : "Manual start · no repeat";
+    $("sketch-meta").textContent = ["ESP32 Dev Module",mode,steps.length + " movements",totalTime(),runLabel,"MAVLink 2 · 20 Hz"].join("   /   ");
+    $("download-code").disabled = $("copy-code").disabled = Boolean(problem || runProblem);
   }
   function renderEditor() {
     path = mission.trajectory(steps); elapsed = 0; activeIndex = -1;
@@ -210,6 +217,10 @@
     $("total-label").textContent = hasFullTurns ? "Preview duration" : "Total duration";
     $("time-column").textContent = hasFullTurns ? "Time" : "Duration";
     $("leg-counter").textContent = steps.length + (steps.length === 1 ? " movement" : " movements");
+    $("auto-start").checked = runOptions.autoStart;
+    $("repeat-interval").value = runOptions.repeatIntervalSeconds;
+    $("repeat-interval").disabled = !runOptions.autoStart;
+    $("run-warning").hidden = !runOptions.autoStart;
     $("add-step").disabled = steps.length >= 100;
     $("steps").replaceChildren(); stepRows = [];
     steps.forEach((step,i) => {
@@ -235,6 +246,16 @@
   }
   function commit() { save(); renderEditor(); }
   $("mode-select").onchange = event => {mode=event.target.value;commit();toast(mode + " · " + modeNotes[mode]);};
+  $("auto-start").onchange = event => {runOptions.autoStart=event.target.checked;commit();};
+  $("repeat-interval").onchange = event => {
+    const value=Number(event.target.value);
+    if (!Number.isInteger(value) || value < 1 || value > 3600) {
+      event.target.value=runOptions.repeatIntervalSeconds;
+      toast("Repeat pause must be a whole number from 1 to 3600 seconds.");
+      return;
+    }
+    runOptions.repeatIntervalSeconds=value;commit();
+  };
   function showTab(generated) {
     closeMenu();
     if (generated) { pause(); togglePreview(false); refreshSketch(); }
@@ -366,9 +387,9 @@
   document.querySelectorAll("[data-close]").forEach(button => {button.onclick=() => $(button.dataset.close).close();});
 
   function downloadSketch() {
-    const problem = mission.validate(steps,mode);
+    const problem = mission.validate(steps,mode) || mission.validateOptions(runOptions);
     if (problem) {toast(problem);return;}
-    const url = URL.createObjectURL(new Blob([mission.generate(steps,mode)],{type:"text/plain;charset=utf-8"}));
+    const url = URL.createObjectURL(new Blob([mission.generate(steps,mode,runOptions)],{type:"text/plain;charset=utf-8"}));
     const a = document.createElement("a");a.href=url;a.download="AuvMission.ino";document.body.append(a);a.click();a.remove();setTimeout(() => URL.revokeObjectURL(url),3000);
   }
   $("download-code").onclick = $("export-download").onclick = downloadSketch;
@@ -378,16 +399,18 @@
   const hosted = location.protocol !== "file:" && !localServer;
   if (hosted) {
     $("export-label").textContent = $("export-title").textContent = "Export sketch";
-    $("export-intro").textContent = "Download the sketch for this sequence and flight mode.";
+    $("export-intro").textContent = runOptions.autoStart
+      ? "This sketch starts when the ESP32 boots and the Pixhawk is live and disarmed. It repeats the sequence " + runOptions.repeatIntervalSeconds + " seconds after each confirmed disarm."
+      : "This sketch stays idle at boot. Send start in the ESP32 serial monitor to run the sequence once.";
     $("local-upload").hidden = true;
     $("hosted-upload").hidden = false;
   }
   $("copy-code").onclick = async () => {
-    try {await navigator.clipboard.writeText(mission.generate(steps,mode));toast("Sketch copied");}
+    try {await navigator.clipboard.writeText(mission.generate(steps,mode,runOptions));toast("Sketch copied");}
     catch {const range=document.createRange();range.selectNodeContents($("sketch-code"));const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);toast("Sketch selected. Use Ctrl+C to copy.");}
   };
   function buildControls() {
-    const valid=!mission.validate(steps,mode);
+    const valid=!mission.validate(steps,mode) && !mission.validateOptions(runOptions);
     $("refresh-ports").disabled = building || checkingPorts || !localServer;
     $("port").disabled=building || checkingPorts || !connection?.ports.length;
     $("verify").disabled=building || checkingPorts || !connection?.canBuild || !valid;
@@ -423,7 +446,7 @@
   $("export-dialog").addEventListener("cancel",event=>{if(building)event.preventDefault();});
   async function build(action) {
     if (!localServer || building || !connection?.canBuild || mission.validate(steps,mode) || (action==="upload" && !$("port").value)) return;
-    const selectedPort=$("port").value, payload={steps,mode,action};
+    const selectedPort=$("port").value, payload={steps,mode,action,options:runOptions};
     if(action==="upload") payload.port=selectedPort;
     building=true;buildControls();
     const log=$("build-log");log.hidden=false;
@@ -434,7 +457,7 @@
       const result=await response.json();
       if (!response.ok || !result.ok) throw new Error(result.log || "The build failed.");
       log.textContent=result.log;
-      $("connection-status").textContent=action==="verify" ? "Sketch verified for ESP32 Dev Module." : "Upload complete on " + selectedPort + ". The ESP32 starts idle.";
+      $("connection-status").textContent=action==="verify" ? "Sketch verified for ESP32 Dev Module." : "Upload complete on " + selectedPort + (runOptions.autoStart ? ". Auto-start is enabled at boot." : ". Auto-start is disabled.");
     } catch(error) {log.textContent=error.message;$("connection-status").textContent=action==="upload" ? "Upload could not be confirmed. Check the tool output below." : "Verification failed. Check the tool output below.";}
     finally {building=false;buildControls();}
   }

@@ -131,7 +131,7 @@ function createDiveServer({ cli = findArduinoCli(), listPorts = discoverPorts, r
       target = initial.find(item => item.port === request.port);
       if (!target) throw new Error("Select a connected ESP32 USB adapter and refresh the ports.");
     }
-    const source = mission.generate(request.steps, request.mode);
+    const source = mission.generate(request.steps, request.mode, request.options);
     if (!jobDir) {
       tempRoot = await fs.promises.realpath(os.tmpdir());
       jobDir = await fs.promises.mkdtemp(path.join(tempRoot, "diveplan-build-"));
@@ -197,8 +197,10 @@ function createDiveServer({ cli = findArduinoCli(), listPorts = discoverPorts, r
         if (!request || !["verify", "upload"].includes(request.action)) return fail(400, "Select Verify or Upload.");
         const invalid = mission.validate(request.steps, request.mode);
         if (invalid) return fail(400, invalid);
-        if (Object.keys(request).some(key => !["steps", "mode", "action", "port"].includes(key))) {
-          return fail(400, "Only mission steps, mode, action, and the selected port are accepted.");
+        const invalidRunOptions = mission.validateOptions(request.options);
+        if (invalidRunOptions) return fail(400, invalidRunOptions);
+        if (Object.keys(request).some(key => !["steps", "mode", "action", "port", "options"].includes(key))) {
+          return fail(400, "Only mission steps, mode, run settings, action, and the selected port are accepted.");
         }
         if (request.action === "upload" && (typeof request.port !== "string" || !/^COM[1-9]\d*$/.test(request.port))) {
           return fail(400, "Select the ESP32 USB port before upload.");
