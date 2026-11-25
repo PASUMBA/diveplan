@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10272e">
+  <title>DivePlan · AUV mission editor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script defer src="mission.js"></script>
+  <script defer src="scene.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="top-inner">
+      <div class="wordmark" aria-label="DivePlan">
+        <svg class="brand-mark" viewBox="0 0 34 34" aria-hidden="true"><rect x="1" y="1" width="32" height="32" rx="8" fill="#9eeedc"/><path d="M6 13.5 15 8l12 6.3-9 5.2z" fill="#143c41"/><path d="m6.8 18.1 11 6.3 9.4-5.5M6.8 22.3l11 6.2 9.4-5.4" fill="none" stroke="#143c41" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>DivePlan</span>
+      </div>
+      <nav aria-label="Workspace view" class="tabs">
+        <button id="editor-tab" class="tab active" aria-current="page"><i data-icon="sliders"></i> Mission editor</button>
+        <button id="sketch-tab" class="tab"><i data-icon="code"></i> Generated sketch</button>
+      </nav>
+      <button id="open-export" class="button export"><i data-icon="upload"></i><span id="export-label">Export &amp; upload</span></button>
+    </div>
+  </header>
+  <main class="workspace">
+    <section class="mission-head" aria-label="Mission settings">
+      <div class="mission-ident">
+        <div class="title-line"><h1 id="mission-title">Tank maneuver</h1><button class="icon-button rename" id="rename" title="Rename mission" aria-label="Rename mission"><i data-icon="pencil"></i></button></div>
+        <div class="metadata"><span><i data-icon="frame"></i> 8-thruster AUV</span><span>Vectored 6DOF</span><span>Pixhawk 2.4.8</span></div>
+      </div>
+      <div class="mode-block">
+        <label class="micro" for="mode-select">Flight mode</label>
+        <div class="select-wrap mode-select"><i data-icon="level"></i><select id="mode-select" aria-describedby="mode-note"><option value="STABILIZE">Stabilize</option><option value="MANUAL">Manual</option><option value="ACRO">Acro</option></select><i data-icon="chevronDown"></i></div>
+        <span id="mode-note" class="sr-only"></span>
+      </div>
+    </section>
+    <div id="editor-view">
+      <div class="editor-grid">
+        <section class="panel steps-panel">
+          <header class="panel-head"><h2><i data-icon="list"></i>Movement sequence</h2><button id="presets" class="text-button">Presets<i data-icon="chevronDown"></i></button></header>
+          <div class="steps-body">
+            <div class="columns"><span>Command</span><span>Duration</span></div>
+            <ol id="steps" class="step-list" aria-label="Movement sequence"></ol>
+            <button id="add-step" class="add-step"><i data-icon="plus"></i>Add movement</button>
+          </div>
+          <footer class="steps-footer"><span><i data-icon="clock"></i> Total duration</span><strong id="total">10.0 s</strong></footer>
+        </section>
+        <section id="preview-panel" class="panel preview-panel">
+          <header class="panel-head"><h2><i data-icon="cube"></i>3D preview</h2><div class="preview-actions"><div class="select-wrap view-choice"><select id="view-choice" aria-label="Camera view"><option value="iso">Isometric</option><option value="top">Top</option><option value="side">Side</option></select><i data-icon="chevronDown"></i></div><button class="icon-button" id="expand" aria-label="Expand preview" title="Expand preview"><i data-icon="expand"></i></button></div></header>
+          <div class="viewport" id="viewport">
+            <canvas id="scene" tabindex="0" aria-label="Interactive 3D preview of the eight-thruster vehicle and relative path. Drag to orbit or use the camera view menu."></canvas>
+            <div class="scene-legend"><span class="legend-dash"></span>Planned path</div>
+            <div class="orbit-note"><i data-icon="orbit"></i> Drag to orbit <span>·</span> Scroll to zoom</div>
+            <button id="reset-view" class="scene-reset" aria-label="Reset camera" title="Reset camera"><i data-icon="focus"></i></button>
+          </div>
+          <div class="transport">
+            <button id="play" class="button play-button"><i data-icon="play"></i><span>Play</span></button>
+            <button id="rewind" class="icon-button" title="Return to start" aria-label="Return to start"><i data-icon="rewind"></i></button>
+            <div class="scrub"><label for="scrubber" class="sr-only">Preview time</label><input type="range" id="scrubber" min="0" max="10" value="0" step="0.01"></div>
+            <span id="clock" class="time-read">0:00 / 0:10</span>
+            <div class="select-wrap speed-select"><select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select><i data-icon="chevronDown"></i></div>
+          </div>
+        </section>
+      </div>
+      <section class="panel timeline-panel">
+        <header class="timeline-header"><h2><i data-icon="timeline"></i>Mission timeline</h2><span id="leg-counter">4 movements</span></header>
+        <div class="timeline-scroll"><div class="timeline-inner"><div id="timeline" class="timeline" aria-label="Mission timeline"></div><div id="ticks" class="ticks"></div></div></div>
+      </section>
+      <div class="workspace-foot"><span><i data-icon="info"></i><span id="motion-note">Preview shows relative motion. Actual travel depends on buoyancy, thrust and water conditions.</span></span><span id="saved"><i data-icon="checkCircle"></i> Saved on this device</span></div>
+    </div>
+    <section id="sketch-view" class="panel sketch-panel" hidden>
+      <header class="panel-head"><h2><i data-icon="code"></i>AuvMission.ino</h2><div class="preview-actions"><button id="copy-code" class="text-button"><i data-icon="copy"></i>Copy</button><button id="download-code" class="button small-button"><i data-icon="download"></i>Download .ino</button></div></header>
+      <div id="sketch-meta" class="code-meta"></div><pre tabindex="0"><code id="sketch-code"></code></pre>
+    </section>
+  </main>
+  <dialog id="step-dialog">
+    <form id="step-form">
+      <div class="dialog-head"><h2 id="step-dialog-title">Add movement</h2><button type="button" data-close="step-dialog" class="icon-button" aria-label="Close"><i data-icon="x"></i></button></div>
+      <div class="dialog-body">
+        <fieldset><legend>Movement</legend><div id="move-choices" class="move-choices"></div></fieldset>
+        <div class="field-line"><label for="step-seconds">Duration</label><div class="number-unit"><input id="step-seconds" type="number" min="0.1" max="600" step="0.1" required><span>s</span></div></div>
+        <div id="power-field"><div class="field-line"><label for="step-power">Pilot input</label><div class="number-unit"><input id="step-power" type="number" min="1" max="100" step="1" required><span>%</span></div></div><input type="range" id="power-slider" aria-label="Pilot input percentage" min="1" max="100" step="1"></div>
+        <p id="step-issue" class="error-message" role="alert"></p>
+      </div>
+      <div class="dialog-foot"><button type="button" class="button quiet" data-close="step-dialog">Cancel</button><button type="submit" id="apply-step" class="button primary">Add movement</button></div>
+    </form>
+  </dialog>
+  <dialog id="presets-dialog"><div class="dialog-head"><h2>Sequence presets</h2><button class="icon-button" data-close="presets-dialog" aria-label="Close"><i data-icon="x"></i></button></div><div class="dialog-body preset-body"><p class="dialog-intro">Choose a starting point to replace the current sequence.</p><button class="preset" data-preset="tank"><i data-icon="route"></i><span><strong>Tank maneuver</strong><small>Forward, down, backward, up · 10 s</small></span><i data-icon="chevronRight"></i></button><button class="preset" data-preset="ascent"><i data-icon="up"></i><span><strong>Vertical ascent</strong><small>Up · 10 s</small></span><i data-icon="chevronRight"></i></button><button class="preset" data-preset="blank"><i data-icon="plus"></i><span><strong>Empty sequence</strong><small>Start with a blank plan</small></span><i data-icon="chevronRight"></i></button></div></dialog>
+  <dialog id="rename-dialog"><form id="rename-form"><div class="dialog-head"><h2>Rename mission</h2><button type="button" class="icon-button" data-close="rename-dialog" aria-label="Close"><i data-icon="x"></i></button></div><div class="dialog-body"><label class="field-label" for="mission-name">Mission name</label><input type="text" id="mission-name" maxlength="56" required></div><div class="dialog-foot"><button type="submit" class="button primary">Save name</button></div></form></dialog>
+  <dialog id="export-dialog">
+    <div class="dialog-head"><h2 id="export-title">Export &amp; upload</h2><button id="close-export" class="icon-button" data-close="export-dialog" aria-label="Close"><i data-icon="x"></i></button></div>
+    <div class="dialog-body export-body">
+      <div class="export-file"><div class="file-icon"><i data-icon="code"></i></div><div><strong>AuvMission.ino</strong><small id="export-meta"></small></div><button id="export-download" class="button quiet small-button"><i data-icon="download"></i>Download</button></div>
+      <p id="export-intro" class="dialog-intro">Open the sketch in Arduino IDE, or compile and upload here over USB. After upload, send <code>start</code> at 115200 baud to run the sequence.</p>
+      <div id="hosted-upload" class="upload-box" hidden><h3>Upload from your computer</h3><p class="dialog-intro">Open <strong>AuvMission.ino</strong> in Arduino IDE with the <strong>MAVLink</strong> library installed. Select <strong>ESP32 Dev Module</strong> and your ESP32 USB port, then click <strong>Upload</strong>.</p><a id="windows-download" class="button quiet small-button" href="./DivePlan-Windows.zip" download><i data-icon="download"></i>Download DivePlan for Windows</a></div>
+      <div id="local-upload" class="upload-box"><h3>ESP32 USB upload</h3><div class="upload-heading"><label for="port" class="field-label">ESP32 serial port</label><button id="refresh-ports" class="text-button" title="Refresh ports"><i data-icon="refresh"></i>Refresh</button></div><div class="select-wrap port-select"><select id="port" aria-describedby="connection-status"><option value="">Select the ESP32 port</option></select><i data-icon="chevronDown"></i></div><p class="connection-note" id="connection-status" role="status"></p><div class="build-actions"><button id="verify" class="button quiet"><i data-icon="checkCircle"></i>Verify sketch</button><button id="upload" class="button primary"><i data-icon="upload"></i>Upload to ESP32</button></div></div>
+      <pre id="build-log" class="build-log" tabindex="0" hidden></pre>
+    </div>
+  </dialog>
+  <div id="action-menu" class="action-menu" hidden></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
