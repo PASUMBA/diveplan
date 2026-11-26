@@ -47,26 +47,37 @@
   const mission = window.DiveMission;
   const scene = window.DiveScene.create($("scene"), view => { $("view-choice").value = view; });
   const storageKey = "diveplan.workspace.v1";
+  function newHotspotPassword() {
+    if (window.crypto?.getRandomValues) {
+      const bytes = new Uint8Array(8); window.crypto.getRandomValues(bytes);
+      return "Dive-" + Array.from(bytes,value => value.toString(16).padStart(2,"0")).join("");
+    }
+    return "Dive-" + Date.now().toString(36) + Math.random().toString(36).slice(2,10);
+  }
   const modeNotes = {
     STABILIZE: "Self-leveling with manual depth control.",
     MANUAL: "Direct pilot control without attitude stabilization.",
     ACRO: "Body-rate control with manual depth control."
   };
   let name = "Tank maneuver", mode = "STABILIZE", steps = mission.defaults();
-  let runOptions = {autoStart:true, repeatIntervalSeconds:20, startupDelaySeconds:10};
+  let runOptions = {startControl:"web", repeatEnabled:true, repeatIntervalSeconds:20, startupDelaySeconds:10,
+    apSsid:"DivePlan-AUV", apPassword:newHotspotPassword()};
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey));
     if (stored && Array.isArray(stored.steps) && Object.hasOwn(modeNotes, stored.mode) &&
         (!stored.steps.length || !mission.validate(stored.steps, stored.mode))) {
       steps = stored.steps;
       mode = stored.mode;
-      if (typeof stored.autoStart === "boolean") runOptions.autoStart = stored.autoStart;
+      if (stored.startControl === "web" || stored.startControl === "boot") runOptions.startControl = stored.startControl;
+      if (typeof stored.repeatEnabled === "boolean") runOptions.repeatEnabled = stored.repeatEnabled;
       if (Number.isInteger(stored.repeatIntervalSeconds) && stored.repeatIntervalSeconds >= 1 && stored.repeatIntervalSeconds <= 3600) {
         runOptions.repeatIntervalSeconds = stored.repeatIntervalSeconds;
       }
       if (Number.isInteger(stored.startupDelaySeconds) && stored.startupDelaySeconds >= 0 && stored.startupDelaySeconds <= 120) {
         runOptions.startupDelaySeconds = stored.startupDelaySeconds;
       }
+      if (typeof stored.apSsid === "string" && /^[A-Za-z0-9_-]{1,31}$/.test(stored.apSsid)) runOptions.apSsid=stored.apSsid;
+      if (typeof stored.apPassword === "string" && /^[A-Za-z0-9_-]{8,63}$/.test(stored.apPassword)) runOptions.apPassword=stored.apPassword;
       if (typeof stored.name === "string" && stored.name.trim()) name = stored.name.trim().slice(0,56);
     }
   } catch { /* The editor also runs with browser storage unavailable. */ }
@@ -206,7 +217,7 @@
     const problem = mission.validate(steps,mode);
     const runProblem = mission.validateOptions(runOptions);
     $("sketch-code").textContent = problem || runProblem || mission.generate(steps,mode,runOptions);
-    const runLabel = runOptions.autoStart ? "Auto-start · wait " + runOptions.startupDelaySeconds + " s · repeat " + runOptions.repeatIntervalSeconds + " s" : "Manual start · no repeat";
+    const runLabel = (runOptions.startControl === "web" ? "Hotspot Start" : "Auto-start") + " · wait " + runOptions.startupDelaySeconds + " s · " + (runOptions.repeatEnabled ? "repeat " + runOptions.repeatIntervalSeconds + " s" : "one run");
     $("sketch-meta").textContent = ["ESP32 Dev Module",mode,steps.length + " movements",totalTime(),runLabel,"MAVLink 2 · 20 Hz"].join("   /   ");
     $("download-code").disabled = $("copy-code").disabled = Boolean(problem || runProblem);
   }
@@ -220,13 +231,22 @@
     $("total-label").textContent = hasFullTurns ? "Preview duration" : "Total duration";
     $("time-column").textContent = hasFullTurns ? "Time" : "Duration";
     $("leg-counter").textContent = steps.length + (steps.length === 1 ? " movement" : " movements");
-    $("auto-start").checked = runOptions.autoStart;
+    $("start-control").value = runOptions.startControl;
+    $("repeat-enabled").checked = runOptions.repeatEnabled;
     $("repeat-interval").value = runOptions.repeatIntervalSeconds;
+    $("repeat-interval").disabled = !runOptions.repeatEnabled;
     $("startup-delay").value = runOptions.startupDelaySeconds;
-    $("repeat-interval").disabled = !runOptions.autoStart;
-    $("startup-delay").disabled = !runOptions.autoStart;
-    $("auto-start-note").textContent = "Waits " + runOptions.startupDelaySeconds + " seconds after a live Pixhawk heartbeat before starting.";
-    $("run-warning").hidden = !runOptions.autoStart;
+    $("ap-ssid").value = runOptions.apSsid;
+    $("ap-password").value = runOptions.apPassword;
+    $("auto-start-note").textContent = runOptions.startControl === "web"
+      ? "Join the ESP32 hotspot and tap Start after the tube is sealed."
+      : "Starts automatically after the Pixhawk startup wait.";
+    $("run-warning").textContent = runOptions.startControl === "web"
+      ? (runOptions.repeatEnabled
+        ? "Join the protected hotspot and tap Start after sealing the tube. The sequence repeats every " + runOptions.repeatIntervalSeconds + " seconds until Stop. Wi-Fi will not reach the vehicle underwater, so Stop is available only while the ESP32 is in range."
+        : "Join the protected hotspot and tap Start after sealing the tube. The sequence runs once and then disarms. Wi-Fi will not reach the vehicle underwater.")
+      : "Auto-start can arm and run the thrusters after power-up. The hotspot Stop button works only while the ESP32 is in Wi-Fi range.";
+    $("hotspot-credentials").textContent = "Wi-Fi: " + runOptions.apSsid + " · Password: " + runOptions.apPassword + " · Control page: http://192.168.4.1/";
     $("add-step").disabled = steps.length >= 100;
     $("steps").replaceChildren(); stepRows = [];
     steps.forEach((step,i) => {
@@ -252,7 +272,8 @@
   }
   function commit() { save(); renderEditor(); }
   $("mode-select").onchange = event => {mode=event.target.value;commit();toast(mode + " · " + modeNotes[mode]);};
-  $("auto-start").onchange = event => {runOptions.autoStart=event.target.checked;commit();};
+  $("start-control").onchange = event => {runOptions.startControl=event.target.value;commit();};
+  $("repeat-enabled").onchange = event => {runOptions.repeatEnabled=event.target.checked;commit();};
   $("repeat-interval").onchange = event => {
     const value=Number(event.target.value);
     if (!Number.isInteger(value) || value < 1 || value > 3600) {
@@ -270,6 +291,24 @@
       return;
     }
     runOptions.startupDelaySeconds=value;commit();
+  };
+  $("ap-ssid").onchange = event => {
+    const value=event.target.value.trim();
+    if (!/^[A-Za-z0-9_-]{1,31}$/.test(value)) {
+      event.target.value=runOptions.apSsid;
+      toast("Hotspot name: 1–31 letters, numbers, hyphens, or underscores.");
+      return;
+    }
+    runOptions.apSsid=value;commit();
+  };
+  $("ap-password").onchange = event => {
+    const value=event.target.value.trim();
+    if (!/^[A-Za-z0-9_-]{8,63}$/.test(value)) {
+      event.target.value=runOptions.apPassword;
+      toast("Hotspot password needs 8–63 letters, numbers, hyphens, or underscores.");
+      return;
+    }
+    runOptions.apPassword=value;commit();
   };
   function showTab(generated) {
     closeMenu();
@@ -412,11 +451,16 @@
     ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname) &&
     ["/", "/index.html"].includes(location.pathname);
   const hosted = location.protocol !== "file:" && !localServer;
+  function updateExportIntro() {
+    const repeatSummary = runOptions.repeatEnabled
+      ? " It repeats " + runOptions.repeatIntervalSeconds + " seconds after successful disarm until you tap Stop."
+      : " It runs once, then disarms.";
+    $("export-intro").textContent = runOptions.startControl === "web"
+      ? "Join Wi-Fi " + runOptions.apSsid + " with password " + runOptions.apPassword + ", open http://192.168.4.1/, and tap Start Sequence after sealing the tube. The page is available only while the ESP32 is in Wi-Fi range." + repeatSummary
+      : "This sketch starts automatically after a " + runOptions.startupDelaySeconds + " second wait for a live, disarmed Pixhawk heartbeat." + repeatSummary + " The ESP32 hotspot Stop button is available while in Wi-Fi range.";
+  }
   if (hosted) {
     $("export-label").textContent = $("export-title").textContent = "Export sketch";
-    $("export-intro").textContent = runOptions.autoStart
-      ? "This sketch waits " + runOptions.startupDelaySeconds + " seconds after a live Pixhawk heartbeat, then starts automatically when the Pixhawk is disarmed. It repeats " + runOptions.repeatIntervalSeconds + " seconds after each confirmed disarm."
-      : "This sketch stays idle at boot. Send start in the ESP32 serial monitor to run the sequence once.";
     $("local-upload").hidden = true;
     $("hosted-upload").hidden = false;
   }
@@ -455,12 +499,13 @@
   $("refresh-ports").onclick=refreshPorts; $("port").onchange=buildControls;
   $("open-export").onclick=() => {
     pause();closeMenu();
+    updateExportIntro();
     $("export-meta").textContent = steps.length ? mode + " · " + steps.length + (steps.length===1?" movement · ":" movements · ") + totalTime() : "Add a movement to export this mission.";
     $("build-log").hidden=true;$("export-dialog").showModal();buildControls();refreshPorts();
   };
   $("export-dialog").addEventListener("cancel",event=>{if(building)event.preventDefault();});
   async function build(action) {
-    if (!localServer || building || !connection?.canBuild || mission.validate(steps,mode) || (action==="upload" && !$("port").value)) return;
+    if (!localServer || building || !connection?.canBuild || mission.validate(steps,mode) || mission.validateOptions(runOptions) || (action==="upload" && !$("port").value)) return;
     const selectedPort=$("port").value, payload={steps,mode,action,options:runOptions};
     if(action==="upload") payload.port=selectedPort;
     building=true;buildControls();
@@ -472,7 +517,7 @@
       const result=await response.json();
       if (!response.ok || !result.ok) throw new Error(result.log || "The build failed.");
       log.textContent=result.log;
-      $("connection-status").textContent=action==="verify" ? "Sketch verified for ESP32 Dev Module." : "Upload complete on " + selectedPort + (runOptions.autoStart ? ". Auto-start is enabled at boot." : ". Auto-start is disabled.");
+      $("connection-status").textContent=action==="verify" ? "Sketch verified for ESP32 Dev Module." : "Upload complete on " + selectedPort + ". Hotspot " + runOptions.apSsid + "; open http://192.168.4.1/ for control.";
     } catch(error) {log.textContent=error.message;$("connection-status").textContent=action==="upload" ? "Upload could not be confirmed. Check the tool output below." : "Verification failed. Check the tool output below.";}
     finally {building=false;buildControls();}
   }

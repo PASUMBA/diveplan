@@ -91,15 +91,27 @@
     if (!options || typeof options !== "object" || Array.isArray(options)) {
       return "Run settings must be an object.";
     }
-    const autoStart = options.autoStart === undefined ? true : options.autoStart;
+    const startControl = options.startControl === undefined
+      ? (options.autoStart === undefined ? "web" : options.autoStart ? "boot" : "web")
+      : options.startControl;
     const repeatIntervalSeconds = options.repeatIntervalSeconds === undefined ? 20 : options.repeatIntervalSeconds;
+    const repeatEnabled = options.repeatEnabled === undefined ? true : options.repeatEnabled;
     const startupDelaySeconds = options.startupDelaySeconds === undefined ? 10 : options.startupDelaySeconds;
-    if (typeof autoStart !== "boolean") return "Automatic startup must be on or off.";
+    const apSsid = options.apSsid === undefined ? "DivePlan-AUV" : options.apSsid;
+    const apPassword = options.apPassword === undefined ? "DivePlan-Start26" : options.apPassword;
+    if (startControl !== "web" && startControl !== "boot") return "Select hotspot button or automatic boot start.";
+    if (typeof repeatEnabled !== "boolean") return "Repeat mode must be on or off.";
     if (!Number.isInteger(repeatIntervalSeconds) || repeatIntervalSeconds < 1 || repeatIntervalSeconds > 3600) {
       return "Repeat interval must be a whole number from 1 to 3600 seconds.";
     }
     if (!Number.isInteger(startupDelaySeconds) || startupDelaySeconds < 0 || startupDelaySeconds > 120) {
       return "Pixhawk startup delay must be a whole number from 0 to 120 seconds.";
+    }
+    if (typeof apSsid !== "string" || !/^[A-Za-z0-9_-]{1,31}$/.test(apSsid)) {
+      return "Hotspot name must be 1 to 31 letters, numbers, hyphens, or underscores.";
+    }
+    if (typeof apPassword !== "string" || !/^[A-Za-z0-9_-]{8,63}$/.test(apPassword)) {
+      return "Hotspot password must be 8 to 63 letters, numbers, hyphens, or underscores.";
     }
     return null;
   }
@@ -107,9 +119,15 @@
   function generate(steps, mode = "STABILIZE", options = {}) {
     const problem = validate(steps, mode) || validateOptions(options);
     if (problem) throw new Error(problem);
-    const autoStart = options.autoStart === undefined ? true : options.autoStart;
+    const startControl = options.startControl === undefined
+      ? (options.autoStart === undefined ? "web" : options.autoStart ? "boot" : "web")
+      : options.startControl;
+    const autoStart = startControl === "boot";
     const repeatIntervalSeconds = options.repeatIntervalSeconds === undefined ? 20 : options.repeatIntervalSeconds;
+    const repeatEnabled = options.repeatEnabled === undefined ? true : options.repeatEnabled;
     const startupDelaySeconds = options.startupDelaySeconds === undefined ? 10 : options.startupDelaySeconds;
+    const apSsid = options.apSsid === undefined ? "DivePlan-AUV" : options.apSsid;
+    const apPassword = options.apPassword === undefined ? "DivePlan-Start26" : options.apPassword;
     const lines = steps.map(({move, seconds, power}) => {
       const direction = moves[move];
       const horizontalInput = Math.round(power * 10);
@@ -124,7 +142,10 @@
       .replace("@@DIVEPLAN_MISSION_HAS_FULL_TURN@@", String(steps.some(step => moves[step.move].fullTurn)))
       .replace("@@DIVEPLAN_AUTO_START@@", String(autoStart))
       .replace("@@DIVEPLAN_REPEAT_INTERVAL_MS@@", String(repeatIntervalSeconds * 1000))
+      .replace("@@DIVEPLAN_REPEAT_ENABLED@@", String(repeatEnabled))
       .replace("@@DIVEPLAN_PIXHAWK_STARTUP_DELAY_MS@@", String(startupDelaySeconds * 1000))
+      .replace("@@DIVEPLAN_AP_SSID@@", apSsid)
+      .replace("@@DIVEPLAN_AP_PASSWORD@@", apPassword)
       .replace("@@DIVEPLAN_MISSION_LEGS@@", lines.join("\n"));
   }
 
@@ -136,6 +157,9 @@
 // For a full-turn leg, durationMs is a deadline and yaw is the maximum signed input.
 #include <Arduino.h>
 #include <MAVLink_ardupilotmega.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <esp_system.h>
 #include <math.h>
 
 namespace {
@@ -149,8 +173,11 @@ constexpr uint32_t kStabilizeMode = 0;
 constexpr uint32_t kMissionMode = @@DIVEPLAN_MISSION_MODE@@;
 constexpr bool kMissionHasFullTurn = @@DIVEPLAN_MISSION_HAS_FULL_TURN@@;
 constexpr bool kAutoStart = @@DIVEPLAN_AUTO_START@@;
+constexpr bool kRepeatEnabled = @@DIVEPLAN_REPEAT_ENABLED@@;
 constexpr uint32_t kRepeatIntervalMs = @@DIVEPLAN_REPEAT_INTERVAL_MS@@;
 constexpr uint32_t kPixhawkStartupDelayMs = @@DIVEPLAN_PIXHAWK_STARTUP_DELAY_MS@@;
+constexpr char kApSsid[] = "@@DIVEPLAN_AP_SSID@@";
+constexpr char kApPassword[] = "@@DIVEPLAN_AP_PASSWORD@@";
 constexpr uint32_t kHeartbeatInterval = 1000;
 constexpr uint32_t kHeartbeatTimeout = 2500;
 constexpr uint32_t kPilotInterval = 50;
@@ -187,6 +214,31 @@ constexpr Leg kLegs[] = {
 };
 constexpr size_t kLegCount = sizeof(kLegs) / sizeof(kLegs[0]);
 
+WebServer controlWebServer(80);
+const char kControlPage[] PROGMEM = R"HTML(<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#10272e"><title>DivePlan AUV Control</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf3f2;color:#172e34;font:16px system-ui,Segoe UI,Arial,sans-serif}.wrap{max-width:520px;margin:0 auto;padding:20px}.card{background:#fff;border:1px solid #d2dcde;border-radius:14px;padding:20px;box-shadow:0 6px 24px #10262d12}.brand{font-size:13px;letter-spacing:.12em;color:#087b72;font-weight:800}.status{margin:18px 0;padding:14px;border-radius:9px;background:#f1f6f5;line-height:1.5}.state{font-weight:750;font-size:19px}.detail{color:#526b71;font-size:14px}.buttons{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0}button{border:0;border-radius:9px;padding:15px 12px;color:#fff;font-size:16px;font-weight:750;cursor:pointer;min-height:54px}button:disabled{opacity:.45;cursor:not-allowed}#start{background:#087b72}#stop{background:#aa3b32}.note{font-size:13px;line-height:1.5;color:#50656a}.message{min-height:22px;font-size:14px;font-weight:650;color:#205b52}.footer{font-size:12px;color:#6c7f83;margin-top:18px}@media(max-width:390px){.wrap{padding:12px}.card{padding:16px}.buttons{grid-template-columns:1fr}}
+</style></head><body><main class="wrap"><section class="card">
+<div class="brand">DIVEPLAN · AUV</div><h1>Mission control</h1>
+<div class="status"><div id="state" class="state">Connecting…</div><div id="detail" class="detail">Reading Pixhawk status</div></div>
+<div class="buttons"><button id="start" type="button">Start sequence</button><button id="stop" type="button">Stop</button></div>
+<div id="message" class="message" role="status"></div>
+<p class="note" id="repeat-note">After starting, the sequence repeats after each successful run. Press Stop to end it.</p>
+<p class="note">Wi-Fi cannot reach the ESP32 underwater. Start while the vehicle is out of the water; the mission continues onboard after the phone loses connection. Stop requires Wi-Fi range. If your phone says the hotspot has no internet, stay connected.</p>
+<div class="footer">Control page hosted by the ESP32 · <span id="ip"></span></div>
+</section></main><script>
+let token="";let busy=false;const byId=id=>document.getElementById(id);
+async function refresh(){try{const r=await fetch('/status',{cache:'no-store'});if(!r.ok)throw new Error('Status unavailable');const s=await r.json();token=s.token;
+byId('state').textContent=s.state;byId('detail').textContent='Pixhawk: '+s.pixhawk+' · '+(s.armed?'armed':'disarmed')+' · '+(s.autoRun?'sequence active or queued':'sequence stopped');
+byId('ip').textContent=s.ip;byId('repeat-note').textContent=s.repeatEnabled?'After each successful disarm, the sequence repeats in '+s.repeatSeconds+' seconds until you press Stop.':'Start runs the sequence once, then disarms.';
+byId('start').disabled=busy||s.autoRun||s.state!=='idle'||s.armed;byId('stop').disabled=busy||(!s.autoRun&&s.state==='idle'&&!s.armed);
+}catch(e){byId('state').textContent='ESP32 status unavailable';byId('detail').textContent='Stay connected to the ESP32 hotspot and retry.';byId('start').disabled=true;byId('stop').disabled=true;}}
+async function command(path){if(!token||busy)return;busy=true;byId('start').disabled=true;byId('stop').disabled=true;byId('message').textContent='Sending…';try{const r=await fetch('/'+path,{method:'POST',headers:{'X-Control-Token':token}});const d=await r.json();byId('message').textContent=d.message|| (r.ok?'Command accepted':'Command rejected');}catch(e){byId('message').textContent='No reply from ESP32. Refresh status before trying again.';}finally{busy=false;await refresh();}}
+byId('start').onclick=()=>command('start');byId('stop').onclick=()=>command('stop');refresh();setInterval(refresh,1000);
+</script></body></html>)HTML";
+
 class AuvPilot {
  public:
   void begin() {
@@ -194,9 +246,10 @@ class AuvPilot {
     pixhawk_.begin(kPixhawkBaud, SERIAL_8N1, kPixhawkRx, kPixhawkTx);
     autoRunEnabled_ = kAutoStart;
     startupDelayPending_ = kAutoStart && kPixhawkStartupDelayMs != 0;
+    startControlPortal();
     Serial.println(kAutoStart
-      ? "AuvMavlink ready. AUTO-RUN enabled: waits for Pixhawk startup, then runs and repeats after each confirmed disarm. Commands: status, auto, start, stop"
-      : "AuvMavlink ready. Auto-run disabled. Commands: status, auto, prepare, start, up, up10, stop");
+      ? "AuvMavlink ready. Auto-run at boot is enabled. Commands: status, auto, start, stop"
+      : "AuvMavlink ready. Waiting for Start on the ESP32 hotspot. Commands: status, auto, prepare, start, up, up10, stop");
   }
 
   void update() {
@@ -222,6 +275,7 @@ class AuvPilot {
       }
       lastPilotSent_ = now;
     }
+    controlWebServer.handleClient();
   }
 
  private:
@@ -257,6 +311,7 @@ class AuvPilot {
   bool repeatAfterDisarm_ = false;
   bool startupDelayPending_ = false;
   bool startupDelayStarted_ = false;
+  char controlToken_[17]{};
   bool haveHome_ = false;
   bool haveOrigin_ = false;
   bool homeRequested_ = false;
@@ -282,6 +337,82 @@ class AuvPilot {
 
   bool attitudeFresh(uint32_t now) const {
     return yawSamples_ >= 2 && now - lastYawAt_ <= kAttitudeTimeout;
+  }
+
+  void startControlPortal() {
+    snprintf(controlToken_, sizeof(controlToken_), "%08lx%08lx",
+             static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));
+    WiFi.mode(WIFI_AP);
+    if (!WiFi.softAP(kApSsid, kApPassword)) {
+      Serial.println("Could not start the control hotspot.");
+      return;
+    }
+    static const char *headers[] = {"X-Control-Token"};
+    controlWebServer.collectHeaders(headers, 1);
+    controlWebServer.on("/", HTTP_GET, [this]() {
+      controlWebServer.send_P(200, "text/html; charset=utf-8", kControlPage);
+    });
+    controlWebServer.on("/status", HTTP_GET, [this]() { sendWebStatus(); });
+    controlWebServer.on("/start", HTTP_POST, [this]() { handleWebStart(); });
+    controlWebServer.on("/stop", HTTP_POST, [this]() { handleWebStop(); });
+    controlWebServer.onNotFound([this]() {
+      controlWebServer.send(404, "application/json", "{\"message\":\"Unknown control route\"}");
+    });
+    controlWebServer.begin();
+    Serial.printf("Hotspot name: %s\nHotspot password: %s\nControl page: http://%s/\n",
+                  kApSsid, kApPassword, WiFi.softAPIP().toString().c_str());
+  }
+
+  bool validControlToken() {
+    return controlWebServer.header("X-Control-Token").equals(controlToken_);
+  }
+
+  void sendWebStatus() {
+    char body[320];
+    const uint32_t now = millis();
+    const String ip = WiFi.softAPIP().toString();
+    snprintf(body, sizeof(body),
+             "{\"state\":\"%s\",\"pixhawk\":\"%s\",\"armed\":%s,\"autoRun\":%s,\"repeatEnabled\":%s,\"token\":\"%s\",\"ip\":\"%s\",\"repeatSeconds\":%lu}",
+             stateName(), linkFresh(now) ? "live" : "waiting", vehicleArmed_ ? "true" : "false",
+             autoRunEnabled_ ? "true" : "false", kRepeatEnabled ? "true" : "false", controlToken_, ip.c_str(),
+             static_cast<unsigned long>(kRepeatIntervalMs / 1000));
+    controlWebServer.send(200, "application/json", body);
+  }
+
+  void handleWebStart() {
+    const uint32_t now = millis();
+    if (!validControlToken()) {
+      controlWebServer.send(403, "application/json", "{\"message\":\"Refresh the control page and try again\"}");
+    } else if (state_ != State::Idle || autoRunEnabled_) {
+      controlWebServer.send(409, "application/json", "{\"message\":\"A sequence is already active or waiting\"}");
+    } else if (linkFresh(now) && vehicleArmed_) {
+      controlWebServer.send(409, "application/json", "{\"message\":\"Pixhawk is armed. Stop and disarm it before starting\"}");
+    } else {
+      autoRunEnabled_ = true;
+      currentSequenceAuto_ = false;
+      repeatAfterDisarm_ = false;
+      nextAutoStartAt_ = now;
+      startupDelayPending_ = kPixhawkStartupDelayMs != 0;
+      startupDelayStarted_ = false;
+      Serial.println("Web Start accepted. Waiting for a fresh, disarmed Pixhawk and startup delay.");
+      controlWebServer.send(202, "application/json", "{\"message\":\"Start accepted. Waiting for Pixhawk startup\"}");
+    }
+  }
+
+  void handleWebStop() {
+    if (!validControlToken()) {
+      controlWebServer.send(403, "application/json", "{\"message\":\"Refresh the control page and try again\"}");
+      return;
+    }
+    autoRunEnabled_ = false;
+    repeatAfterDisarm_ = false;
+    startupDelayPending_ = false;
+    startupDelayStarted_ = false;
+    if ((state_ != State::Idle || vehicleArmed_) && state_ != State::Disarming && vehicleSystem_ != 0) {
+      startDisarming(millis());
+    }
+    Serial.println("Web Stop accepted. Auto-repeat disabled.");
+    controlWebServer.send(200, "application/json", "{\"message\":\"Stop accepted. Disarming if the Pixhawk is armed\"}");
   }
 
   void enter(State state, uint32_t now) {
@@ -628,7 +759,11 @@ class AuvPilot {
   }
 
   void startDisarming(uint32_t now, bool sequenceCompleted = false) {
-    repeatAfterDisarm_ = sequenceCompleted && autoRunEnabled_;
+    repeatAfterDisarm_ = sequenceCompleted && autoRunEnabled_ && kRepeatEnabled;
+    if (sequenceCompleted && !kRepeatEnabled) {
+      autoRunEnabled_ = false;
+      Serial.println("Sequence finished. Repeat is disabled; awaiting a new Start.");
+    }
     if (!sequenceCompleted && currentSequenceAuto_ && autoRunEnabled_) {
       autoRunEnabled_ = false;
       Serial.println("Auto-run stopped after an interrupted or failed sequence.");
@@ -918,7 +1053,7 @@ class AuvPilot {
     havePilotTimeout_ = false;
     enter(State::CheckingFailsafe, now);
     requestFailsafe(now);
-    Serial.println("Auto-start: checking Pixhawk failsafe settings.");
+    Serial.println("Sequence start: checking Pixhawk failsafe settings.");
   }
 };
 
