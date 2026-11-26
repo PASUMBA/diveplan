@@ -53,7 +53,7 @@
     ACRO: "Body-rate control with manual depth control."
   };
   let name = "Tank maneuver", mode = "STABILIZE", steps = mission.defaults();
-  let runOptions = {autoStart:true, repeatIntervalSeconds:20};
+  let runOptions = {autoStart:true, repeatIntervalSeconds:20, startupDelaySeconds:10};
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey));
     if (stored && Array.isArray(stored.steps) && Object.hasOwn(modeNotes, stored.mode) &&
@@ -63,6 +63,9 @@
       if (typeof stored.autoStart === "boolean") runOptions.autoStart = stored.autoStart;
       if (Number.isInteger(stored.repeatIntervalSeconds) && stored.repeatIntervalSeconds >= 1 && stored.repeatIntervalSeconds <= 3600) {
         runOptions.repeatIntervalSeconds = stored.repeatIntervalSeconds;
+      }
+      if (Number.isInteger(stored.startupDelaySeconds) && stored.startupDelaySeconds >= 0 && stored.startupDelaySeconds <= 120) {
+        runOptions.startupDelaySeconds = stored.startupDelaySeconds;
       }
       if (typeof stored.name === "string" && stored.name.trim()) name = stored.name.trim().slice(0,56);
     }
@@ -203,7 +206,7 @@
     const problem = mission.validate(steps,mode);
     const runProblem = mission.validateOptions(runOptions);
     $("sketch-code").textContent = problem || runProblem || mission.generate(steps,mode,runOptions);
-    const runLabel = runOptions.autoStart ? "Auto-start · repeats every " + runOptions.repeatIntervalSeconds + " s" : "Manual start · no repeat";
+    const runLabel = runOptions.autoStart ? "Auto-start · wait " + runOptions.startupDelaySeconds + " s · repeat " + runOptions.repeatIntervalSeconds + " s" : "Manual start · no repeat";
     $("sketch-meta").textContent = ["ESP32 Dev Module",mode,steps.length + " movements",totalTime(),runLabel,"MAVLink 2 · 20 Hz"].join("   /   ");
     $("download-code").disabled = $("copy-code").disabled = Boolean(problem || runProblem);
   }
@@ -219,7 +222,10 @@
     $("leg-counter").textContent = steps.length + (steps.length === 1 ? " movement" : " movements");
     $("auto-start").checked = runOptions.autoStart;
     $("repeat-interval").value = runOptions.repeatIntervalSeconds;
+    $("startup-delay").value = runOptions.startupDelaySeconds;
     $("repeat-interval").disabled = !runOptions.autoStart;
+    $("startup-delay").disabled = !runOptions.autoStart;
+    $("auto-start-note").textContent = "Waits " + runOptions.startupDelaySeconds + " seconds after a live Pixhawk heartbeat before starting.";
     $("run-warning").hidden = !runOptions.autoStart;
     $("add-step").disabled = steps.length >= 100;
     $("steps").replaceChildren(); stepRows = [];
@@ -255,6 +261,15 @@
       return;
     }
     runOptions.repeatIntervalSeconds=value;commit();
+  };
+  $("startup-delay").onchange = event => {
+    const value=Number(event.target.value);
+    if (!Number.isInteger(value) || value < 0 || value > 120) {
+      event.target.value=runOptions.startupDelaySeconds;
+      toast("Startup wait must be a whole number from 0 to 120 seconds.");
+      return;
+    }
+    runOptions.startupDelaySeconds=value;commit();
   };
   function showTab(generated) {
     closeMenu();
@@ -400,7 +415,7 @@
   if (hosted) {
     $("export-label").textContent = $("export-title").textContent = "Export sketch";
     $("export-intro").textContent = runOptions.autoStart
-      ? "This sketch starts when the ESP32 boots and the Pixhawk is live and disarmed. It repeats the sequence " + runOptions.repeatIntervalSeconds + " seconds after each confirmed disarm."
+      ? "This sketch waits " + runOptions.startupDelaySeconds + " seconds after a live Pixhawk heartbeat, then starts automatically when the Pixhawk is disarmed. It repeats " + runOptions.repeatIntervalSeconds + " seconds after each confirmed disarm."
       : "This sketch stays idle at boot. Send start in the ESP32 serial monitor to run the sequence once.";
     $("local-upload").hidden = true;
     $("hosted-upload").hidden = false;

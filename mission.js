@@ -93,9 +93,13 @@
     }
     const autoStart = options.autoStart === undefined ? true : options.autoStart;
     const repeatIntervalSeconds = options.repeatIntervalSeconds === undefined ? 20 : options.repeatIntervalSeconds;
+    const startupDelaySeconds = options.startupDelaySeconds === undefined ? 10 : options.startupDelaySeconds;
     if (typeof autoStart !== "boolean") return "Automatic startup must be on or off.";
     if (!Number.isInteger(repeatIntervalSeconds) || repeatIntervalSeconds < 1 || repeatIntervalSeconds > 3600) {
       return "Repeat interval must be a whole number from 1 to 3600 seconds.";
+    }
+    if (!Number.isInteger(startupDelaySeconds) || startupDelaySeconds < 0 || startupDelaySeconds > 120) {
+      return "Pixhawk startup delay must be a whole number from 0 to 120 seconds.";
     }
     return null;
   }
@@ -105,6 +109,7 @@
     if (problem) throw new Error(problem);
     const autoStart = options.autoStart === undefined ? true : options.autoStart;
     const repeatIntervalSeconds = options.repeatIntervalSeconds === undefined ? 20 : options.repeatIntervalSeconds;
+    const startupDelaySeconds = options.startupDelaySeconds === undefined ? 10 : options.startupDelaySeconds;
     const lines = steps.map(({move, seconds, power}) => {
       const direction = moves[move];
       const horizontalInput = Math.round(power * 10);
@@ -119,6 +124,7 @@
       .replace("@@DIVEPLAN_MISSION_HAS_FULL_TURN@@", String(steps.some(step => moves[step.move].fullTurn)))
       .replace("@@DIVEPLAN_AUTO_START@@", String(autoStart))
       .replace("@@DIVEPLAN_REPEAT_INTERVAL_MS@@", String(repeatIntervalSeconds * 1000))
+      .replace("@@DIVEPLAN_PIXHAWK_STARTUP_DELAY_MS@@", String(startupDelaySeconds * 1000))
       .replace("@@DIVEPLAN_MISSION_LEGS@@", lines.join("\n"));
   }
 
@@ -144,6 +150,7 @@ constexpr uint32_t kMissionMode = @@DIVEPLAN_MISSION_MODE@@;
 constexpr bool kMissionHasFullTurn = @@DIVEPLAN_MISSION_HAS_FULL_TURN@@;
 constexpr bool kAutoStart = @@DIVEPLAN_AUTO_START@@;
 constexpr uint32_t kRepeatIntervalMs = @@DIVEPLAN_REPEAT_INTERVAL_MS@@;
+constexpr uint32_t kPixhawkStartupDelayMs = @@DIVEPLAN_PIXHAWK_STARTUP_DELAY_MS@@;
 constexpr uint32_t kHeartbeatInterval = 1000;
 constexpr uint32_t kHeartbeatTimeout = 2500;
 constexpr uint32_t kPilotInterval = 50;
@@ -186,8 +193,9 @@ class AuvPilot {
     Serial.begin(kConsoleBaud);
     pixhawk_.begin(kPixhawkBaud, SERIAL_8N1, kPixhawkRx, kPixhawkTx);
     autoRunEnabled_ = kAutoStart;
+    startupDelayPending_ = kAutoStart && kPixhawkStartupDelayMs != 0;
     Serial.println(kAutoStart
-      ? "AuvMavlink ready. AUTO-RUN enabled: waits for a live, disarmed Pixhawk, then repeats after each confirmed disarm. Commands: status, auto, start, stop"
+      ? "AuvMavlink ready. AUTO-RUN enabled: waits for Pixhawk startup, then runs and repeats after each confirmed disarm. Commands: status, auto, start, stop"
       : "AuvMavlink ready. Auto-run disabled. Commands: status, auto, prepare, start, up, up10, stop");
   }
 
@@ -232,6 +240,7 @@ class AuvPilot {
   uint32_t vehicleMode_ = 0;
   uint32_t requestedMode_ = kMissionMode;
   uint32_t nextAutoStartAt_ = 0;
+  uint32_t startupDelaySince_ = 0;
   bool vehicleArmed_ = false;
   uint32_t lastVehicleHeartbeat_ = 0;
   uint32_t heartbeatCount_ = 0;
@@ -246,6 +255,8 @@ class AuvPilot {
   bool autoRunEnabled_ = false;
   bool currentSequenceAuto_ = false;
   bool repeatAfterDisarm_ = false;
+  bool startupDelayPending_ = false;
+  bool startupDelayStarted_ = false;
   bool haveHome_ = false;
   bool haveOrigin_ = false;
   bool homeRequested_ = false;
@@ -289,7 +300,8 @@ class AuvPilot {
 
   const char *stateName() const {
     switch (state_) {
-      case State::Idle: return "idle";
+      case State::Idle:
+        return autoRunEnabled_ ? (startupDelayPending_ ? "waiting for Pixhawk startup" : "auto-run waiting") : "idle";
       case State::CheckingFailsafe: return "checking pilot failsafe";
       case State::CheckingHome: return "checking home";
       case State::SettingMode: return "setting flight mode";
@@ -556,8 +568,10 @@ class AuvPilot {
     const bool shortUp = !strcmp(consoleLine_, "up");
     const bool longUp = !strcmp(consoleLine_, "up10");
     if (!strcmp(consoleLine_, "status")) {
-      Serial.printf("State: %s. Pixhawk link: %s. Auto-run: %s.\n", stateName(),
-                    linkFresh(now) ? "live" : "waiting", autoRunEnabled_ ? "on" : "off");
+      Serial.printf("State: %s. Pixhawk link: %s. Auto-run: %s. Startup wait: %lu s; repeat pause: %lu s.\n",
+                    stateName(), linkFresh(now) ? "live" : "waiting", autoRunEnabled_ ? "on" : "off",
+                    static_cast<unsigned long>(kPixhawkStartupDelayMs / 1000),
+                    static_cast<unsigned long>(kRepeatIntervalMs / 1000));
       if (vehicleSystem_ != 0) {
         Serial.printf("Last heartbeat: system %u, mode %lu, %s, age %lu ms\n", vehicleSystem_,
                       static_cast<unsigned long>(vehicleMode_), vehicleArmed_ ? "armed" : "disarmed",
@@ -568,7 +582,10 @@ class AuvPilot {
     } else if (!strcmp(consoleLine_, "auto")) {
       autoRunEnabled_ = true;
       nextAutoStartAt_ = now;
-      Serial.println("Auto-run enabled. It will start when ArduSub is live and disarmed.");
+      startupDelayPending_ = kPixhawkStartupDelayMs != 0;
+      startupDelayStarted_ = false;
+      Serial.printf("Auto-run enabled. Waiting %lu seconds after the Pixhawk link is live.\n",
+                    static_cast<unsigned long>(kPixhawkStartupDelayMs / 1000));
     } else if (!strcmp(consoleLine_, "start") || !strcmp(consoleLine_, "prepare") ||
                shortUp || longUp) {
       if (state_ != State::Idle || !linkFresh(now) || vehicleArmed_) {
@@ -697,9 +714,25 @@ class AuvPilot {
       if (autoRunEnabled_ && linkFresh(now) && vehicleArmed_) {
         autoRunEnabled_ = false;
         Serial.println("Auto-start canceled because the Pixhawk was already armed. Disarm it, then send auto to resume.");
-      } else if (autoRunEnabled_ && linkFresh(now) &&
-          static_cast<int32_t>(now - nextAutoStartAt_) >= 0) {
-        startAutomaticSequence(now);
+      } else if (autoRunEnabled_ && linkFresh(now)) {
+        if (startupDelayPending_) {
+          if (!startupDelayStarted_) {
+            startupDelaySince_ = now;
+            startupDelayStarted_ = true;
+            Serial.printf("Pixhawk heartbeat is live and disarmed. Waiting %lu seconds for startup.\n",
+                          static_cast<unsigned long>(kPixhawkStartupDelayMs / 1000));
+          } else if (now - startupDelaySince_ >= kPixhawkStartupDelayMs) {
+            startupDelayPending_ = false;
+            startupDelayStarted_ = false;
+            Serial.println("Pixhawk startup wait complete.");
+          }
+        }
+        if (!startupDelayPending_ && static_cast<int32_t>(now - nextAutoStartAt_) >= 0) {
+          startAutomaticSequence(now);
+        }
+      } else if (autoRunEnabled_ && startupDelayPending_ && startupDelayStarted_) {
+        startupDelayStarted_ = false;
+        Serial.println("Pixhawk link dropped during startup wait. The timer will restart when the link returns.");
       }
       return;
     }

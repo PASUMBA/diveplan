@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#10272e">
   <title>DivePlan · AUV mission editor</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=auto-repeat">
-  <script defer src="mission.js?v=auto-repeat"></script>
+  <link rel="stylesheet" href="style.css?v=startup-wait">
+  <script defer src="mission.js?v=startup-wait"></script>
   <script defer src="scene.js"></script>
-  <script defer src="app.js?v=auto-repeat"></script>
+  <script defer src="app.js?v=startup-wait"></script>
 </head>
 <body>
   <header class="topbar">
@@ -72,7 +72,8 @@
       <section class="panel run-settings" aria-label="ESP32 run behavior">
         <header class="panel-head"><h2><i data-icon="clock"></i>ESP32 run behavior</h2></header>
         <div class="run-settings-body">
-          <label class="auto-start-option"><input id="auto-start" type="checkbox" checked><span><strong>Start automatically when the ESP32 boots</strong><small>Waits for a live, disarmed Pixhawk before starting the sequence.</small></span></label>
+          <label class="auto-start-option"><input id="auto-start" type="checkbox" checked><span><strong>Start automatically when the ESP32 boots</strong><small id="auto-start-note">Waits 10 seconds after a live Pixhawk heartbeat before starting.</small></span></label>
+          <label class="run-time-option" for="startup-delay">Pixhawk startup wait <span class="number-unit"><input id="startup-delay" type="number" min="0" max="120" step="1" value="10" required><span>seconds</span></span></label>
           <label class="repeat-option" for="repeat-interval">Repeat pause <span class="number-unit"><input id="repeat-interval" type="number" min="1" max="3600" step="1" value="20" required><span>seconds</span></span></label>
           <p class="run-warning" id="run-warning">When enabled, the generated program can arm and run the thrusters after power-up. Turn this off for bench setups where you do not want automatic motion.</p>
         </div>
@@ -103,7 +104,7 @@
     <div class="dialog-head"><h2 id="export-title">Export &amp; upload</h2><button id="close-export" class="icon-button" data-close="export-dialog" aria-label="Close"><i data-icon="x"></i></button></div>
     <div class="dialog-body export-body">
       <div class="export-file"><div class="file-icon"><i data-icon="code"></i></div><div><strong>AuvMission.ino</strong><small id="export-meta"></small></div><button id="export-download" class="button quiet small-button"><i data-icon="download"></i>Download</button></div>
-      <p id="export-intro" class="dialog-intro">The generated sketch uses the run behavior selected in the editor. With auto-start enabled, it starts when the Pixhawk is live and disarmed, then repeats after the selected pause.</p>
+      <p id="export-intro" class="dialog-intro">The generated sketch uses the run behavior selected in the editor. With auto-start enabled, it waits for the selected Pixhawk startup delay, then starts when the Pixhawk is live and disarmed.</p>
       <div id="hosted-upload" class="upload-box" hidden><h3>Upload from your computer</h3><p class="dialog-intro">Open <strong>AuvMission.ino</strong> in Arduino IDE with the <strong>MAVLink</strong> library installed. Select <strong>ESP32 Dev Module</strong> and your ESP32 USB port, then click <strong>Upload</strong>.</p><a id="windows-download" class="button quiet small-button" href="./DivePlan-Windows.zip" download><i data-icon="download"></i>Download DivePlan for Windows</a></div>
       <div id="local-upload" class="upload-box"><h3>ESP32 USB upload</h3><div class="upload-heading"><label for="port" class="field-label">ESP32 serial port</label><button id="refresh-ports" class="text-button" title="Refresh ports"><i data-icon="refresh"></i>Refresh</button></div><div class="select-wrap port-select"><select id="port" aria-describedby="connection-status"><option value="">Select the ESP32 port</option></select><i data-icon="chevronDown"></i></div><p class="connection-note" id="connection-status" role="status"></p><div class="build-actions"><button id="verify" class="button quiet"><i data-icon="checkCircle"></i>Verify sketch</button><button id="upload" class="button primary"><i data-icon="upload"></i>Upload to ESP32</button></div></div>
       <pre id="build-log" class="build-log" tabindex="0" hidden></pre>
